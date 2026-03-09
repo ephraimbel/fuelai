@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+@theme {
+  --color-flame: #FF4D00;
+  --color-flame-soft: #FFF0E8;
+  --color-flame-hover: #E64500;
+  --color-ink: #1C1917;
+  --color-ink-soft: #292524;
+  --color-warm-white: #FDFAF6;
+  --color-cloud: #F5F0EB;
+  --color-mist: #E8E2DC;
+  --color-stone: #8C8279;
+  --color-fog: #C4BBB2;
+
+  --color-protein: #8B5CF6;
+  --color-carbs: #F59E0B;
+  --color-fat: #3B82F6;
+  --color-success: #22C55E;
+
+  --font-family-serif: 'DM Serif Display', Georgia, serif;
+  --font-family-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-family-sans);
+  background: var(--color-warm-white);
+  color: var(--color-ink);
+  overflow-x: hidden;
+}
+
+::selection {
+  background: var(--color-flame);
+  color: white;
+}
+
+/* Smooth section dividers */
+.section-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--color-mist), transparent);
+}
+
+/* Legal page prose */
+.prose-fuel h2 {
+  font-family: var(--font-family-serif);
+  font-size: 1.35rem;
+  color: var(--color-ink);
+  margin-top: 2.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.prose-fuel h3 {
+  font-family: var(--font-family-serif);
+  font-size: 1.1rem;
+  color: var(--color-ink);
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.prose-fuel p {
+  font-size: 0.935rem;
+  color: var(--color-stone);
+  line-height: 1.8;
+  margin-bottom: 0.75rem;
+}
+
+.prose-fuel ul {
+  padding-left: 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.prose-fuel li {
+  font-size: 0.935rem;
+  color: var(--color-stone);
+  line-height: 1.8;
+  margin-bottom: 0.35rem;
+}
+
+.prose-fuel a {
+  color: var(--color-flame);
+  text-decoration: none;
+  transition: opacity 0.2s;
+}
+
+.prose-fuel a:hover {
+  opacity: 0.8;
+}
+
+.prose-fuel strong {
+  color: var(--color-ink);
+}
