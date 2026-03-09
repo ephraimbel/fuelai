@@ -8,6 +8,9 @@ DerivedData/
 .build/
 Package.resolved
 
+# Node
+node_modules/
+
 # macOS
 .DS_Store
 
