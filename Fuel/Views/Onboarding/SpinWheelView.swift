@@ -1,6 +1,8 @@
 import SwiftUI
+import StoreKit
 
 struct SpinWheelView: View {
+    @Environment(SubscriptionService.self) private var subscriptionService
     let onClaim: () -> Void
     let onDismiss: () -> Void
 
@@ -135,6 +137,14 @@ struct SpinWheelView: View {
 
     // MARK: - Result Card
 
+    private var discountedProduct: Product? {
+        subscriptionService.products.first { $0.id == Constants.discountedWeeklyProductID }
+    }
+
+    private var regularProduct: Product? {
+        subscriptionService.products.first { $0.id == Constants.weeklyProductID }
+    }
+
     private var resultCard: some View {
         VStack(spacing: FuelSpacing.lg) {
             Text("You won 60% off!")
@@ -142,7 +152,7 @@ struct SpinWheelView: View {
                 .foregroundStyle(FuelColors.ink)
 
             HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text("$1.99")
+                Text(discountedProduct?.displayPrice ?? "$1.99")
                     .font(FuelType.hero)
                     .foregroundStyle(FuelColors.flame)
                 Text("/wk")
@@ -150,7 +160,7 @@ struct SpinWheelView: View {
                     .foregroundStyle(FuelColors.stone)
             }
 
-            Text("$4.99/wk")
+            Text("\(regularProduct?.displayPrice ?? "$4.99")/wk")
                 .font(FuelType.body)
                 .foregroundStyle(FuelColors.stone)
                 .strikethrough()

@@ -109,17 +109,24 @@ RESPOND ONLY IN THIS JSON FORMAT: ${ANALYSIS_JSON_FORMAT}`
 
 const TEXT_ANALYSIS_PROMPT = `You are a USDA-certified clinical nutritionist. Estimate nutrition for the described food with precision.
 
+SCOPE — ABSOLUTELY CRITICAL:
+- ONLY analyze the food items the user explicitly described. Do NOT add sides, drinks, or extras unless the user mentioned them.
+- If the user says "In-N-Out burger", analyze ONLY the burger — do NOT add fries, soda, or a shake.
+- If the user says "chicken salad", analyze ONLY the chicken salad — do NOT add bread, a drink, or dessert.
+- If the user says "burger and fries", THEN include both the burger and fries.
+- The user's description is the COMPLETE list of what to analyze. Never assume they had more than what they said.
+
 MEAL NAMING — CRITICAL:
 - display_name MUST be descriptive and specific (e.g. "Grilled Chicken Caesar Salad", "In-N-Out Double-Double Burger", "Chipotle Chicken Burrito Bowl").
 - NEVER use vague names like "Food", "Meal", "Dish". Be as specific as the food allows.
 
 INGREDIENT ITEMIZATION — CRITICAL:
-- List EVERY component as a SEPARATE item. Users must be able to remove/adjust any ingredient.
+- List EVERY component OF THE DESCRIBED FOOD as a SEPARATE item. Users must be able to remove/adjust any ingredient.
 - A "chicken burrito" must list: flour tortilla, seasoned chicken, cilantro lime rice, black beans, cheese, pico de gallo, sour cream, guacamole.
 - A "Big Mac" must list: beef patties (2), special sauce, lettuce, American cheese (2 slices), pickles, onions, sesame seed bun.
 - A "chicken salad bowl" must list: grilled chicken breast, romaine lettuce, spinach, cherry tomatoes, cucumber, red onion, croutons, dressing.
-- Sauces, dressings, oils, condiments are ALWAYS separate items — never skip them.
-- Drinks are separate items.
+- Sauces, dressings, oils, condiments that are PART of the described dish are ALWAYS separate items — never skip them.
+- Only include drinks if the user explicitly mentioned a drink.
 
 RESTAURANT & BRAND RECOGNITION — CRITICAL:
 - If the user mentions a restaurant or brand (Chipotle, McDonald's, Starbucks, In-N-Out, Chick-fil-A, etc.), use that restaurant's ACTUAL published nutrition data and standard recipe.
@@ -263,6 +270,9 @@ function validateAndFixResponse(parsed: any): any {
   if (!parsed.items || !Array.isArray(parsed.items)) {
     throw new Error("Invalid AI response structure")
   }
+  if (parsed.items.length === 0 && (parsed.total_calories || 0) === 0) {
+    throw new Error("AI could not identify any food items from the input")
+  }
 
   parsed.items = parsed.items.map((item: any) => {
     const cal = Number(item.calories) || 0
@@ -304,6 +314,14 @@ function validateAndFixResponse(parsed: any): any {
       // Adjust carbs to close the gap (carbs are most commonly misestimated)
       const carbsCorrection = (parsed.total_calories - (parsed.total_protein * 4 + parsed.total_fat * 9)) / 4
       if (carbsCorrection > 0) {
+        // Distribute correction proportionally across items
+        const oldTotalCarbs = parsed.total_carbs
+        if (oldTotalCarbs > 0) {
+          const scale = carbsCorrection / oldTotalCarbs
+          for (const item of parsed.items) {
+            item.carbs = Math.round(item.carbs * scale * 10) / 10
+          }
+        }
         parsed.total_carbs = Math.round(carbsCorrection * 10) / 10
       }
     }
@@ -337,13 +355,29 @@ function parseAIResponse(text: string): any {
   let cleaned = text.trim()
   cleaned = cleaned.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim()
 
-  const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) {
+  // Use balanced-brace extraction instead of greedy regex
+  const start = cleaned.indexOf("{")
+  if (start === -1) {
     throw new Error("Could not parse AI response: no JSON object found")
   }
 
+  let depth = 0
+  let end = -1
+  for (let i = start; i < cleaned.length; i++) {
+    if (cleaned[i] === "{") depth++
+    else if (cleaned[i] === "}") {
+      depth--
+      if (depth === 0) { end = i; break }
+    }
+  }
+
+  if (end === -1) {
+    throw new Error("Could not parse AI response: unbalanced braces")
+  }
+
+  const jsonStr = cleaned.substring(start, end + 1)
   try {
-    return JSON.parse(jsonMatch[0])
+    return JSON.parse(jsonStr)
   } catch (e) {
     throw new Error(`Invalid JSON in AI response: ${(e as Error).message}`)
   }
@@ -536,7 +570,8 @@ async function handleBarcode(barcode: string, apiKey: string): Promise<Response>
             sodium_mg: sodium,
           }
 
-          return jsonResponse(result)
+          const validated = validateAndFixResponse(result)
+          return jsonResponse(validated)
         }
       }
     }

@@ -3,6 +3,8 @@ import SwiftUI
 struct SubscriptionView: View {
     @Environment(SubscriptionService.self) private var subscriptionService
     @Environment(\.dismiss) private var dismiss
+    @State private var purchaseError: String?
+    @State private var isPurchasing = false
 
     var body: some View {
         VStack(spacing: FuelSpacing.xl) {
@@ -66,8 +68,16 @@ struct SubscriptionView: View {
                 VStack(spacing: FuelSpacing.md) {
                     ForEach(subscriptionService.products, id: \.id) { product in
                         Button {
+                            guard !isPurchasing else { return }
+                            isPurchasing = true
                             Task {
-                                _ = try? await subscriptionService.purchase(product)
+                                do {
+                                    let success = try await subscriptionService.purchase(product)
+                                    if success { dismiss() }
+                                } catch {
+                                    purchaseError = "Purchase failed. Please try again."
+                                }
+                                isPurchasing = false
                             }
                         } label: {
                             HStack {
@@ -80,9 +90,13 @@ struct SubscriptionView: View {
                                         .foregroundStyle(FuelColors.stone)
                                 }
                                 Spacer()
-                                Text(product.displayPrice)
-                                    .font(FuelType.section)
-                                    .foregroundStyle(FuelColors.ink)
+                                if isPurchasing {
+                                    ProgressView()
+                                } else {
+                                    Text(product.displayPrice)
+                                        .font(FuelType.section)
+                                        .foregroundStyle(FuelColors.ink)
+                                }
                             }
                             .padding(FuelSpacing.lg)
                             .background(
@@ -91,14 +105,36 @@ struct SubscriptionView: View {
                                     .shadow(color: FuelColors.cardShadow, radius: 8, y: 3)
                             )
                         }
+                        .disabled(isPurchasing)
                     }
                 }
                 .padding(.horizontal, FuelSpacing.xl)
 
                 Spacer()
 
+                // Apple-required subscription disclosures (Guideline 3.1.2)
+                VStack(spacing: FuelSpacing.xs) {
+                    Text("Subscriptions auto-renew unless cancelled at least 24 hours before the end of the current period. Manage in Settings > Apple ID > Subscriptions.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(FuelColors.fog)
+                        .multilineTextAlignment(.center)
+
+                    HStack(spacing: FuelSpacing.md) {
+                        Link("Terms of Service", destination: URL(string: "https://getfuelai.com/terms")!)
+                            .font(.system(size: 10))
+                            .foregroundStyle(FuelColors.stone)
+                        Link("Privacy Policy", destination: URL(string: "https://getfuelai.com/privacy")!)
+                            .font(.system(size: 10))
+                            .foregroundStyle(FuelColors.stone)
+                    }
+                }
+                .padding(.horizontal, FuelSpacing.xl)
+
                 Button {
-                    Task { try? await subscriptionService.restorePurchases() }
+                    Task {
+                        try? await subscriptionService.restorePurchases()
+                        if subscriptionService.isPremium { dismiss() }
+                    }
                 } label: {
                     Text("Restore Purchases")
                         .font(FuelType.label)
@@ -117,6 +153,14 @@ struct SubscriptionView: View {
                     .font(FuelType.body)
                     .foregroundStyle(FuelColors.ink)
             }
+        }
+        .alert("Purchase Error", isPresented: Binding(
+            get: { purchaseError != nil },
+            set: { if !$0 { purchaseError = nil } }
+        )) {
+            Button("OK") { purchaseError = nil }
+        } message: {
+            Text(purchaseError ?? "")
         }
         .task {
             try? await subscriptionService.loadProducts()

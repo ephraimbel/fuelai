@@ -98,13 +98,24 @@ struct MealCardView: View {
             .gesture(
                 DragGesture()
                     .onChanged { value in
-                        if value.translation.width < 0 {
+                        if showingDelete {
+                            // Allow dragging back to dismiss delete button
+                            offset = min(0, -70 + value.translation.width)
+                        } else if value.translation.width < 0 {
                             offset = value.translation.width
                         }
                     }
                     .onEnded { value in
                         withAnimation(FuelAnimation.snappy) {
-                            if value.translation.width < -60 {
+                            if showingDelete {
+                                // If swiped right enough, dismiss delete
+                                if value.translation.width > 30 {
+                                    offset = 0
+                                    showingDelete = false
+                                } else {
+                                    offset = -70
+                                }
+                            } else if value.translation.width < -60 {
                                 offset = -70
                                 showingDelete = true
                             } else {

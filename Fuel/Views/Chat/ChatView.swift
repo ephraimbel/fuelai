@@ -105,8 +105,12 @@ struct ChatView: View {
                 if !appState.chatMessages.isEmpty {
                     Button {
                         FuelHaptics.shared.tap()
+                        let userId = appState.userProfile?.id
                         withAnimation(FuelAnimation.smooth) {
                             appState.chatMessages.removeAll()
+                        }
+                        if let userId {
+                            Task { try? await appState.databaseService?.clearChatHistory(userId: userId) }
                         }
                     } label: {
                         Image(systemName: "square.and.pencil")
@@ -145,7 +149,7 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showingChatLog) {
             if let query = chatLogQuery {
-                LogFlowView()
+                LogFlowView(initialSearchQuery: query)
                     .environment(appState)
                     .environment(subscriptionService)
             }
@@ -1006,8 +1010,8 @@ struct ChatView: View {
 
     private func sendMessage(_ text: String) {
         guard !appState.isSendingMessage else { return }
-        let profile = appState.userProfile
-        let userId = profile?.id ?? UUID()
+        guard let profile = appState.userProfile else { return }
+        let userId = profile.id
         guard RateLimiter.canChat(isPremium: subscriptionService.isPremium) else {
             // Restore the message so the user doesn't lose their input
             if messageText.isEmpty { messageText = text }
@@ -1034,9 +1038,9 @@ struct ChatView: View {
             try? await appState.databaseService?.saveChatMessage(userMessage)
 
             // Gather 7-day history for richer context
-            let weekHistory = profile != nil ? await buildWeekHistory(for: profile!) : []
-            let topFoods = profile != nil ? await buildTopFoods(for: profile!) : []
-            let weightTrend = profile != nil ? await buildWeightTrend(for: profile!) : nil
+            let weekHistory = await buildWeekHistory(for: profile)
+            let topFoods = await buildTopFoods(for: profile)
+            let weightTrend = await buildWeightTrend(for: profile)
 
             // Build meal detail JSON for edit feature
             let mealsDetail = buildTodayMealsDetail()
@@ -1055,11 +1059,11 @@ struct ChatView: View {
                 todayProtein: appState.proteinConsumed,
                 todayCarbs: appState.carbsConsumed,
                 todayFat: appState.fatConsumed,
-                goalType: profile?.goalType?.rawValue ?? "maintain",
+                goalType: profile.goalType?.rawValue ?? "maintain",
                 recentMeals: appState.todayMeals.map { $0.displayName },
                 streak: appState.currentStreak,
-                displayName: profile?.displayName ?? "",
-                dietStyle: profile?.dietStyle?.rawValue,
+                displayName: profile.displayName ?? "",
+                dietStyle: profile.dietStyle?.rawValue,
                 weekHistory: weekHistory,
                 topFoods: topFoods,
                 weightTrend: weightTrend,
@@ -1168,10 +1172,14 @@ struct ChatView: View {
     }
 
     private func buildTopFoods(for profile: UserProfile) async -> [String] {
-        guard let summaries = try? await appState.databaseService?.getSummaries(userId: profile.id, days: 7) else { return [] }
+        guard let db = appState.databaseService else { return [] }
         var foodCounts: [String: Int] = [:]
-        for summary in summaries {
-            for meal in summary.meals {
+        // Query actual meals for the last 7 days (summaries don't include meals)
+        for dayOffset in 0..<7 {
+            guard let date = Calendar.current.date(byAdding: .day, value: -dayOffset, to: Date()) else { continue }
+            let dateStr = date.dateString
+            guard let meals = try? await db.getMeals(for: dateStr, userId: profile.id) else { continue }
+            for meal in meals {
                 let name = meal.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 if !name.isEmpty { foodCounts[name, default: 0] += 1 }
             }
@@ -1205,10 +1213,6 @@ struct ChatView: View {
             handleFoodLog(query: name)
             return
         }
-        guard let db = appState.databaseService else {
-            appendErrorMessage("Couldn't log the meal — try again in a moment.", userId: profile.id)
-            return
-        }
         let userId = profile.id
         Task {
             let item = MealItem(
@@ -1235,9 +1239,14 @@ struct ChatView: View {
                 loggedAt: Date(),
                 createdAt: Date()
             )
+            // Optimistic: show meal immediately
+            await MainActor.run {
+                appState.todayMeals.append(meal)
+                appState.rebuildSummaryFromMeals()
+                appState.dataVersion += 1
+            }
             do {
-                try await db.logMeal(meal)
-                await appState.refreshTodayData()
+                try await appState.databaseService?.logMeal(meal)
                 await appState.recalculateDailySummary(forceFromMeals: true)
                 await MainActor.run {
                     FuelHaptics.shared.tap()
@@ -1256,8 +1265,10 @@ struct ChatView: View {
                 #if DEBUG
                 print("[Chat] Direct log failed: \(error)")
                 #endif
+                // Add to pending queue for retry on next launch
                 await MainActor.run {
-                    appendErrorMessage("Couldn't log \(name) — please try again.", userId: userId)
+                    appState.markMealPending(meal)
+                    appendErrorMessage("Saved \(name) locally — it will sync when you're back online.", userId: userId)
                 }
             }
         }
@@ -1274,6 +1285,7 @@ struct ChatView: View {
             #if DEBUG
             print("[Chat] Meal edit: meal not found \(editData.mealId)")
             #endif
+            appendErrorMessage("Couldn't find that meal to edit. It may have been deleted.", userId: profile.id)
             return
         }
 
@@ -1448,6 +1460,7 @@ struct ChatView: View {
         guard !meals.isEmpty else { return nil }
 
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "h:mm a"
 
         // Use proper JSON encoding to avoid truncation/escape issues

@@ -14,7 +14,7 @@ struct HomeView: View {
                     Image("FuelLogo")
                         .resizable()
                         .scaledToFit()
-                        .frame(height: 34)
+                        .frame(height: 40)
                     Spacer()
                     StreakPillView(streak: appState.currentStreak)
                 }
@@ -210,27 +210,32 @@ struct HomeView: View {
         withAnimation(FuelAnimation.spring) {
             appState.todayMeals.removeAll { $0.id == meal.id }
         }
+        // Remove from pending sync queue if it was there
+        appState.markMealSynced(meal.id)
+        // Capture original index for rollback
+        let originalIndex = appState.todayMeals.firstIndex(where: { $0.id == meal.id }) ?? appState.todayMeals.count
         // Invalidate cache so stale data doesn't resurrect the deleted meal
         appState.invalidateDateCache()
+        // Rebuild summary immediately so calorie rings update
+        appState.rebuildSummaryFromMeals()
 
         Task {
-            // Recalculate summary from the updated meal list (force = skip max() guard)
-            await appState.recalculateDailySummary(forceFromMeals: true)
             FuelHaptics.shared.tap()
 
             do {
                 try await appState.databaseService?.deleteMeal(id: meal.id)
-                // Refresh from DB to confirm
+                // Refresh from DB to confirm and persist summary
                 await appState.refreshTodayData()
                 await appState.recalculateDailySummary(forceFromMeals: true)
             } catch {
-                // Restore meal on failure
+                // Restore meal at original position on failure
                 await MainActor.run {
+                    let insertAt = min(originalIndex, appState.todayMeals.count)
                     withAnimation(FuelAnimation.spring) {
-                        appState.todayMeals.append(meal)
+                        appState.todayMeals.insert(meal, at: insertAt)
                     }
+                    appState.rebuildSummaryFromMeals()
                 }
-                await appState.recalculateDailySummary(forceFromMeals: true)
                 await MainActor.run {
                     withAnimation { deleteError = "Couldn't delete meal. Please try again." }
                 }

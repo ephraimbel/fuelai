@@ -38,7 +38,7 @@ enum AppTheme: String, CaseIterable {
     }
 }
 
-@Observable
+@MainActor @Observable
 final class ThemeManager {
     static let shared = ThemeManager()
 

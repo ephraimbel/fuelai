@@ -275,7 +275,7 @@ struct ProgressTabView: View {
         #if DEBUG
         // Use in-memory seed data if available (bypasses DB for screenshots)
         if !appState.seedSummaries.isEmpty {
-            let cutoffDate = Calendar.current.date(byAdding: .day, value: -selectedPeriod.days, to: Date())!
+            guard let cutoffDate = Calendar.current.date(byAdding: .day, value: -selectedPeriod.days, to: Date()) else { return }
             let cutoffStr = cutoffDate.dateString
             summaries = appState.seedSummaries.filter { $0.date >= cutoffStr }
             weightHistory = appState.seedWeightHistory.filter { $0.loggedAt >= cutoffDate }
@@ -326,7 +326,7 @@ struct ProgressTabView: View {
 
         #if DEBUG
         if !appState.seedSummaries.isEmpty {
-            let cutoffDate = Calendar.current.date(byAdding: .day, value: -selectedPeriod.days, to: Date())!
+            guard let cutoffDate = Calendar.current.date(byAdding: .day, value: -selectedPeriod.days, to: Date()) else { return }
             let cutoffStr = cutoffDate.dateString
             withAnimation(FuelAnimation.spring) {
                 summaries = appState.seedSummaries.filter { $0.date >= cutoffStr }
@@ -429,8 +429,8 @@ struct WeightEntrySheet: View {
                     .font(FuelType.section)
                     .foregroundStyle(FuelColors.ink)
                 Spacer()
-                Button("Cancel") { }.opacity(0)
-                    .font(FuelType.body)
+                Color.clear
+                    .frame(width: 60)
             }
 
             TextField("Weight (\(unitLabel))", text: $weightText)

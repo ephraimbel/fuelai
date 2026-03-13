@@ -16,6 +16,7 @@ struct ShowcaseScanPage: View {
     @State private var showMicros = false
     @State private var showLogButton = false
     @State private var isCamera = true
+    @State private var loopTask: Task<Void, Never>?
 
     private let foodImageURL = "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80"
 
@@ -88,6 +89,10 @@ struct ShowcaseScanPage: View {
             appeared = true
             showFrame = true
             runLoop()
+        }
+        .onDisappear {
+            loopTask?.cancel()
+            loopTask = nil
         }
     }
 
@@ -419,7 +424,8 @@ struct ShowcaseScanPage: View {
     // MARK: - Looping Animation
 
     private func runLoop() {
-        Task { @MainActor in
+        loopTask?.cancel()
+        loopTask = Task { @MainActor in
             while !Task.isCancelled {
                 // Reset
                 isCamera = true

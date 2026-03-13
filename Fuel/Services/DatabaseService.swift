@@ -65,7 +65,7 @@ actor DatabaseService {
 
         try await supabase.from("meals").insert(mealInsert).execute()
 
-        // Insert meal items
+        // Insert meal items — if this fails, delete the meal row so retry works
         struct MealItemInsert: Codable {
             let id: UUID
             let mealId: UUID
@@ -116,7 +116,13 @@ actor DatabaseService {
         }
 
         if !itemInserts.isEmpty {
-            try await supabase.from("meal_items").insert(itemInserts).execute()
+            do {
+                try await supabase.from("meal_items").insert(itemInserts).execute()
+            } catch {
+                // Roll back the meal row so the pending sync queue can retry the whole operation
+                try? await supabase.from("meals").delete().eq("id", value: meal.id.uuidString).execute()
+                throw error
+            }
         }
     }
 
@@ -189,6 +195,60 @@ actor DatabaseService {
             .update(update)
             .eq("id", value: meal.id.uuidString)
             .execute()
+
+        // Also replace meal_items so individual items stay in sync with totals
+        struct MealItemInsert: Codable {
+            let id: UUID
+            let mealId: UUID
+            let name: String
+            let calories: Int
+            let protein: Double
+            let carbs: Double
+            let fat: Double
+            let fiber: Double
+            let sugar: Double
+            let servingSize: String?
+            let estimatedGrams: Double
+            let measurementUnit: String
+            let measurementAmount: Double
+            let quantity: Double
+            let confidence: Double
+
+            enum CodingKeys: String, CodingKey {
+                case id
+                case mealId = "meal_id"
+                case name, calories, protein, carbs, fat, fiber, sugar
+                case servingSize = "serving_size"
+                case estimatedGrams = "estimated_grams"
+                case measurementUnit = "measurement_unit"
+                case measurementAmount = "measurement_amount"
+                case quantity, confidence
+            }
+        }
+
+        // Delete old items, insert new ones
+        try await supabase.from("meal_items")
+            .delete()
+            .eq("meal_id", value: meal.id.uuidString)
+            .execute()
+
+        let itemInserts = meal.items.map { item in
+            MealItemInsert(
+                id: item.id, mealId: meal.id,
+                name: item.name, calories: item.calories,
+                protein: item.protein, carbs: item.carbs, fat: item.fat,
+                fiber: item.fiber, sugar: item.sugar,
+                servingSize: item.servingSize,
+                estimatedGrams: item.estimatedGrams,
+                measurementUnit: item.measurementUnit,
+                measurementAmount: item.measurementAmount,
+                quantity: item.quantity, confidence: item.confidence
+            )
+        }
+
+        if !itemInserts.isEmpty {
+            try await supabase.from("meal_items").insert(itemInserts).execute()
+        }
     }
 
     // MARK: - Daily Summary
@@ -317,6 +377,7 @@ actor DatabaseService {
         // Calculate next day for proper < boundary
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         let nextDay: String
         if let d = formatter.date(from: date), let next = Calendar.current.date(byAdding: .day, value: 1, to: d) {
             nextDay = formatter.string(from: next)
@@ -345,6 +406,7 @@ actor DatabaseService {
         guard let startDate = Calendar.current.date(byAdding: .day, value: -days, to: Date()) else { return [] }
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "UTC")
         let dateString = formatter.string(from: startDate)
 
@@ -372,6 +434,13 @@ actor DatabaseService {
             .execute()
             .value
         return messages.reversed()
+    }
+
+    func clearChatHistory(userId: UUID) async throws {
+        try await supabase.from("chat_messages")
+            .delete()
+            .eq("user_id", value: userId.uuidString)
+            .execute()
     }
 
     // MARK: - Favorites

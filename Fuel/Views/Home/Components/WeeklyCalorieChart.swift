@@ -166,6 +166,7 @@ struct WeeklyCalorieChart: View {
         let today = appState.selectedDate
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
 
         // Build a lookup from summaries
         var summaryMap: [String: DailySummary] = [:]

@@ -10,7 +10,7 @@ final class FuelSounds {
     private let sampleRate: Double = 44100
 
     private init() {
-        format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+        format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) ?? AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false)!
         engine.attach(playerNode)
         engine.connect(playerNode, to: engine.mainMixerNode, format: format)
         engine.mainMixerNode.outputVolume = 0.12 // Subtle — enhancement, not distraction

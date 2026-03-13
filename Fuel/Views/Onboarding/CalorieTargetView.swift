@@ -365,8 +365,14 @@ struct CalorieTargetView: View {
         case .maintain:
             return "Matched to your metabolism to maintain your weight"
         case .gain:
+            if deficit > 0 {
+                return "A \(deficit) cal deficit — increase target for a surplus"
+            }
             return "A \(abs(deficit)) cal surplus to build lean muscle"
         case .bulk:
+            if deficit > 0 {
+                return "A \(deficit) cal deficit — increase target for a surplus"
+            }
             return "A \(abs(deficit)) cal surplus for maximum gains"
         case .athlete:
             return "Fueling your training with enough energy to perform"

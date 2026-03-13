@@ -31,7 +31,7 @@ struct LoadingView: View {
         Image("FuelLogo")
             .resizable()
             .scaledToFit()
-            .frame(height: 44)
+            .frame(height: 56)
             .scaleEffect(pulse ? 1.08 : 0.96)
             .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true), value: pulse)
         .opacity(appeared ? 1 : 0)

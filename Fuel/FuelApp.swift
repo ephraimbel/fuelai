@@ -31,6 +31,10 @@ struct FuelApp: App {
                             if profile.targetCalories != nil {
                                 appState.hasCompletedOnboarding = true
                             }
+                            // Update local profile cache with fresh DB data
+                            if let data = try? JSONEncoder().encode(profile) {
+                                UserDefaults.standard.set(data, forKey: "fuel_local_profile")
+                            }
                             #if DEBUG
                             print("[FuelApp] Session restored (user: \(profile.id))")
                             #endif
@@ -55,11 +59,30 @@ struct FuelApp: App {
                         #endif
                     }
 
+                    // Fallback: if onboarding completed but profile is nil (DB write was killed),
+                    // restore from local cache so the user doesn't see empty targets
+                    if appState.hasCompletedOnboarding, appState.userProfile == nil,
+                       let data = UserDefaults.standard.data(forKey: "fuel_local_profile"),
+                       let localProfile = try? JSONDecoder().decode(UserProfile.self, from: data) {
+                        appState.userProfile = localProfile
+                        #if DEBUG
+                        print("[FuelApp] Restored profile from local cache")
+                        #endif
+                        // Retry DB persistence
+                        Task { try? await appState.databaseService?.updateProfile(localProfile) }
+                    }
+
                     // Activate RAG and refresh data if onboarding is done
                     if appState.hasCompletedOnboarding {
+                        // Load locally-cached meals FIRST so UI is instant
+                        appState.loadLocalMeals()
+
                         async let refreshTask: Void = appState.refreshTodayData()
                         async let ragTask: Void = aiService.activateRAG()
                         _ = await (refreshTask, ragTask)
+
+                        // Retry any meals that failed to sync last session
+                        await appState.syncPendingMeals()
                     } else {
                         await aiService.activateRAG()
                     }
@@ -68,8 +91,11 @@ struct FuelApp: App {
                     updateNotificationSnapshot()
                 }
                 .onChange(of: scenePhase) { _, newPhase in
-                    if newPhase == .active, appState.isAuthenticated {
-                        Task { await appState.refreshTodayData() }
+                    if newPhase == .active, appState.hasCompletedOnboarding {
+                        Task {
+                            await appState.syncPendingMeals()
+                            await appState.refreshTodayData()
+                        }
                         updateNotificationSnapshot()
                     }
                 }

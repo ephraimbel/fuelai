@@ -4,11 +4,13 @@ import StoreKit
 enum UpgradeReason {
     case scanLimit
     case chatLimit
+    case aiDescribe
 
     var title: String {
         switch self {
         case .scanLimit: return "You've used all your free scans"
         case .chatLimit: return "You've used all your free chats"
+        case .aiDescribe: return "AI Describe is a Pro feature"
         }
     }
 
@@ -16,6 +18,7 @@ enum UpgradeReason {
         switch self {
         case .scanLimit: return "Upgrade to fuel+ for unlimited meal scans and more"
         case .chatLimit: return "Upgrade to fuel+ for unlimited AI chat and more"
+        case .aiDescribe: return "Upgrade to fuel+ for AI-powered meal descriptions and more"
         }
     }
 }
@@ -254,7 +257,12 @@ struct UpgradePaywallView: View {
             // Bottom actions
             HStack(spacing: FuelSpacing.xl) {
                 Button {
-                    Task { try? await subscriptionService.restorePurchases() }
+                    Task {
+                        try? await subscriptionService.restorePurchases()
+                        if subscriptionService.isPremium {
+                            dismiss()
+                        }
+                    }
                 } label: {
                     Text("Restore Purchases")
                         .font(FuelType.label)

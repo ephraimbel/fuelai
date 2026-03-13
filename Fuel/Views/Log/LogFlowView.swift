@@ -23,6 +23,7 @@ struct LogFlowView: View {
     @State private var photoError: String?
     @State private var showingAIConsent = false
     @State private var showingSignIn = false
+    @State private var lastResultFromDescribe = false
 
     var body: some View {
         NavigationStack {
@@ -151,7 +152,11 @@ struct LogFlowView: View {
                             }
                         },
                         onRefine: { newQuery in
-                            analyzeText(newQuery)
+                            if lastResultFromDescribe {
+                                analyzeDescription(newQuery)
+                            } else {
+                                analyzeText(newQuery)
+                            }
                         },
                         onSaveFavorite: { analysis in
                             saveFavorite(analysis)
@@ -172,9 +177,11 @@ struct LogFlowView: View {
                         case .search:
                             SearchLogView(onSearch: { query, exactFood in
                                 analyzeText(query, exactFood: exactFood)
+                            }, onDescribe: { description in
+                                analyzeDescription(description)
                             }, onQuickLog: { food in
                                 quickLogFood(food)
-                            })
+                            }, initialQuery: initialSearchQuery)
                         case .barcode:
                             BarcodeLogView(onScan: analyzeBarcode, onSwitchToCamera: {
                                 withAnimation(FuelAnimation.snappy) {
@@ -340,6 +347,7 @@ struct LogFlowView: View {
         errorMessage = nil
         photoError = nil
         isAnalyzing = false
+        lastResultFromDescribe = false
     }
 
     // MARK: - Error Toast
@@ -571,10 +579,12 @@ struct LogFlowView: View {
         return try JSONDecoder().decode(FoodAnalysis.self, from: responseData)
     }
 
-    // MARK: - Text Analysis
+    // MARK: - Text Analysis (Database Only — no AI, no preview flash)
 
     private func analyzeText(_ query: String, exactFood: FoodItem? = nil) {
-        // If user tapped an exact food from autocomplete, use it directly — no AI, no rate limit needed
+        lastResultFromDescribe = false
+
+        // If user tapped an exact food from autocomplete, use it directly
         if let food = exactFood {
             let result = buildPreviewFromFood(food)
             withAnimation(FuelAnimation.smooth) {
@@ -585,19 +595,6 @@ struct LogFlowView: View {
             return
         }
 
-        // Free users: local + free API search — no rate limit needed (costs $0)
-        // Premium users: AI search — check rate limit and consent
-        let isPremium = subscriptionService.isPremium
-        if isPremium {
-            guard checkRateLimit() else { return }
-        } else {
-            // Still require AI consent (Apple Guideline 5.1.2(i)) even for free API lookups
-            if !AIConsentManager.hasConsented {
-                showingAIConsent = true
-                return
-            }
-        }
-
         guard appState.aiService != nil else {
             withAnimation { errorMessage = "Service is loading. Please try again in a moment." }
             return
@@ -605,62 +602,48 @@ struct LogFlowView: View {
 
         isAnalyzing = true
         errorMessage = nil
+        previewResult = nil
 
-        // Show instant RAG preview (< 10ms, local database)
+        // Database-only search: local RAG + USDA + Open Food Facts (free, instant, no AI)
         let ragPreview = appState.aiService?.previewFromRAG(query: query)
-        if let preview = ragPreview {
-            withAnimation(FuelAnimation.smooth) {
-                previewResult = preview
-            }
-        } else {
-            previewResult = nil
-        }
-
-        // Free users: local database + USDA + Open Food Facts (all free, no AI cost)
-        if !isPremium {
-            analysisTask?.cancel()
-            analysisTask = Task {
-                let localResult = await appState.aiService?.searchFoodLocal(query: query)
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
-                        if let result = localResult {
-                            analysisResult = result
-                            previewResult = nil
-                        } else if let preview = ragPreview {
-                            analysisResult = preview
-                            previewResult = nil
-                        } else {
-                            errorMessage = "Couldn't find that food. Try a simpler name like \"chicken breast\" or \"banana\"."
-                        }
-                        isAnalyzing = false
+        analysisTask?.cancel()
+        analysisTask = Task {
+            let localResult = await appState.aiService?.searchFoodLocal(query: query)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                    if let result = localResult {
+                        analysisResult = result
+                    } else if let preview = ragPreview {
+                        analysisResult = preview
+                    } else {
+                        errorMessage = "Couldn't find that food. Try a simpler name like \"chicken breast\" or \"banana\"."
                     }
+                    previewResult = nil
+                    isAnalyzing = false
                 }
             }
-            return
         }
+    }
 
-        // Full AI analysis in background (premium users)
-        // Capture preview for this specific query so fallback uses correct data
-        let fallbackPreview = ragPreview
+    // MARK: - AI Describe (Premium — full ingredient itemization via edge function)
+
+    private func analyzeDescription(_ description: String) {
+        guard checkRateLimit() else { return }
+
+        lastResultFromDescribe = true
+        isAnalyzing = true
+        errorMessage = nil
+        previewResult = nil
+
         analysisTask?.cancel()
         analysisTask = Task {
             do {
-                await appState.aiService?.updateUserContext(
-                    caloriesRemaining: appState.caloriesRemaining,
-                    proteinRemaining: appState.proteinRemaining,
-                    carbsRemaining: appState.carbsRemaining,
-                    fatRemaining: appState.fatRemaining,
-                    goalType: appState.userProfile?.goalType?.rawValue ?? "maintain",
-                    dietStyle: appState.userProfile?.dietStyle?.rawValue ?? "standard"
-                )
-                let result = try await withAnalysisTimeout {
-                    guard let r = try await appState.aiService?.searchFood(query: query) else {
-                        throw FuelError.aiAnalysisFailed("Service not available")
-                    }
-                    return r
-                }
+                // Call the edge function for AI-powered text analysis
+                let result = try await callTextEdgeFunction(query: description)
+
                 await MainActor.run {
+                    FuelHaptics.shared.logSuccess()
                     withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
                         analysisResult = result
                         previewResult = nil
@@ -668,45 +651,114 @@ struct LogFlowView: View {
                     }
                 }
             } catch is CancellationError {
-                // Don't clear previewResult here — a new analyzeText call
-                // already set the correct preview for the new query.
-                // Clearing it would wipe the new preview.
                 return
             } catch {
                 let errorDetail: String
-                if let nutritionError = error as? NutritionError {
-                    switch nutritionError {
-                    case .missingAPIKey:
-                        errorDetail = "Unable to connect to AI. Please close and reopen the app."
-                    case .apiError(let code, _):
-                        errorDetail = code == 429 ? "Rate limited — please wait a moment and try again." : "Server error (\(code)). Please try again."
+                if let urlError = error as? URLError {
+                    switch urlError.code {
+                    case .timedOut:
+                        errorDetail = "Request timed out. Please try again."
+                    case .notConnectedToInternet, .networkConnectionLost:
+                        errorDetail = "No internet connection."
                     default:
-                        errorDetail = "Text analysis failed. Please try again."
+                        errorDetail = "Network error (\(urlError.code.rawValue))."
                     }
-                } else if let fuelError = error as? FuelError {
-                    errorDetail = fuelError.localizedDescription
+                } else if case let FunctionsError.httpError(code, data) = error, code == 401 {
+                    let body = String(data: data, encoding: .utf8) ?? ""
+                    if body.contains("expired") {
+                        errorDetail = "Session expired. Please sign out and sign back in."
+                    } else {
+                        errorDetail = "Please sign in to use AI describe."
+                    }
+                    Task {
+                        _ = try? await Constants.supabase.auth.refreshSession()
+                    }
+                } else if case let FunctionsError.httpError(code, _) = error {
+                    errorDetail = "Server error (\(code)). Please try again."
                 } else {
-                    errorDetail = "Analysis failed. Check your connection and try again."
+                    #if DEBUG
+                    errorDetail = "AI analysis failed: \(error)"
+                    #else
+                    errorDetail = "AI analysis failed. Please try again."
+                    #endif
                 }
+
                 #if DEBUG
-                print("[Fuel] Text analysis error: \(error)")
+                print("[Fuel] AI describe error: \(error)")
                 #endif
+
+                // Fallback: try local database search
+                let localResult = await appState.aiService?.searchFoodLocal(query: description)
                 await MainActor.run {
+                    FuelHaptics.shared.error()
                     withAnimation {
-                        // Use the preview captured for THIS query, not current previewResult
-                        if let preview = fallbackPreview {
-                            analysisResult = preview
-                            previewResult = nil
-                            isAnalyzing = false
-                            errorMessage = nil
+                        if let result = localResult {
+                            analysisResult = result
+                            errorMessage = "AI unavailable — showing database result instead."
                         } else {
                             errorMessage = errorDetail
-                            isAnalyzing = false
                         }
+                        previewResult = nil
+                        isAnalyzing = false
                     }
                 }
             }
         }
+    }
+
+    /// Calls the analyze-food edge function for text descriptions
+    private func callTextEdgeFunction(query: String) async throws -> FoodAnalysis {
+        var accessToken: String?
+
+        if let session = try? await Constants.supabase.auth.session {
+            accessToken = session.accessToken
+        } else if let cached = Constants.supabase.auth.currentSession {
+            accessToken = cached.accessToken
+        } else {
+            #if DEBUG
+            print("[Fuel] callTextEdgeFunction: no session — creating anonymous")
+            #endif
+            try? await Constants.supabase.auth.signInAnonymously()
+            accessToken = Constants.supabase.auth.currentSession?.accessToken
+        }
+
+        guard let token = accessToken else {
+            throw FunctionsError.httpError(code: 401, data: Data("Could not create session".utf8))
+        }
+
+        let authHeaders = ["Authorization": "Bearer \(token)"]
+
+        let responseData: Data = try await withThrowingTaskGroup(of: Data.self) { group in
+            group.addTask {
+                try await Constants.supabase.functions.invoke(
+                    "analyze-food",
+                    options: .init(
+                        headers: authHeaders,
+                        body: [
+                            "query": query,
+                            "request_type": "text"
+                        ] as [String: String]
+                    )
+                ) { data, _ in data }
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(30))
+                throw URLError(.timedOut)
+            }
+            guard let result = try await group.next() else {
+                throw URLError(.timedOut)
+            }
+            group.cancelAll()
+            return result
+        }
+
+        #if DEBUG
+        if let responseStr = String(data: responseData, encoding: .utf8) {
+            print("[Fuel] Text edge function response: \(responseStr.prefix(200))")
+        }
+        #endif
+
+        return try JSONDecoder().decode(FoodAnalysis.self, from: responseData)
     }
 
     // MARK: - Barcode Analysis
@@ -938,17 +990,22 @@ struct LogFlowView: View {
         // Ensure we're viewing today so the new meal shows in the correct list
         appState.selectedDate = Date()
 
-        // Add meal to list immediately (visible behind sheet)
+        // Mark as pending sync BEFORE appending — append triggers didSet which persists to
+        // UserDefaults, so the pending queue must already contain this meal at that point
+        appState.markMealPending(meal)
+
+        // Add meal to list immediately (visible behind sheet) — also persists to UserDefaults
         appState.todayMeals.append(meal)
+
+        // Update summary IMMEDIATELY so calorie rings reflect the new meal
+        appState.rebuildSummaryFromMeals()
+        appState.dataVersion += 1
 
         // Record locally (always works, even offline)
         MealHistoryService.shared.recordMeal(name: meal.displayName, calories: meal.totalCalories)
 
-        // Only count against scan limit for premium users (they use AI)
-        // Free users use local database + free APIs — no scan quota consumed
-        if subscriptionService.isPremium {
-            RateLimiter.recordScan()
-        }
+        // Record scan for all users — rate limiter gates free users' access
+        RateLimiter.recordScan()
 
         // Record user corrections for learning
         if let original = analysisResult {
@@ -988,8 +1045,6 @@ struct LogFlowView: View {
             try? await Task.sleep(for: .seconds(1.2))
             guard !Task.isCancelled else { return }
 
-            // Dismiss first, then update summary after sheet slides away
-            // so the user SEES the rings animate on the home screen
             await MainActor.run {
                 dismiss()
             }
@@ -998,24 +1053,6 @@ struct LogFlowView: View {
             try? await Task.sleep(for: .seconds(0.4))
 
             await MainActor.run {
-                // Now update the summary — rings animate with bounce + glow
-                // Re-derive from current todaySummary in case another meal was logged
-                // between when we captured `summary` and now
-                var freshSummary = appState.todaySummary ?? DailySummary(userId: profile.id, date: now.dateString)
-                freshSummary.totalCalories += meal.totalCalories
-                freshSummary.totalProtein += meal.totalProtein
-                freshSummary.totalCarbs += meal.totalCarbs
-                freshSummary.totalFat += meal.totalFat
-                freshSummary.totalFiber += meal.totalFiber
-                freshSummary.totalSugar += meal.totalSugar
-                freshSummary.totalSodium += meal.totalSodium
-                freshSummary.isOnTarget = Double(freshSummary.totalCalories) <= Double(appState.calorieTarget) * 1.1
-
-                withAnimation(.spring(response: 0.9, dampingFraction: 0.5)) {
-                    appState.todaySummary = freshSummary
-                }
-                appState.dataVersion += 1
-
                 let totalScans = UserDefaults.standard.integer(forKey: "lifetime_scan_count") + 1
                 UserDefaults.standard.set(totalScans, forKey: "lifetime_scan_count")
                 if totalScans == 1 || totalScans == 5 || totalScans == 25 || totalScans == 100 {
@@ -1026,15 +1063,45 @@ struct LogFlowView: View {
                 }
             }
 
-            // Persist to database in background (non-blocking)
-            do {
-                try await appState.databaseService?.logMeal(meal)
+            // Persist to database with retry
+            var saved = false
+            guard let db = appState.databaseService else {
+                #if DEBUG
+                print("[Fuel] No database service — meal stays in pending queue")
+                #endif
+                await MainActor.run {
+                    appState.errorMessage = "Meal saved locally. It will sync when you're back online."
+                    appState.showingError = true
+                }
+                return
+            }
+            for attempt in 1...3 {
+                do {
+                    try await db.logMeal(meal)
+                    saved = true
+                    #if DEBUG
+                    print("[Fuel] Meal saved to DB (attempt \(attempt))")
+                    #endif
+                    break
+                } catch {
+                    #if DEBUG
+                    print("[Fuel] DB save attempt \(attempt) failed: \(error)")
+                    #endif
+                    if attempt < 3 {
+                        try? await Task.sleep(for: .seconds(Double(attempt) * 1.0))
+                    }
+                }
+            }
 
-                // Sync summary to DB (don't recalculate from todayMeals — local state is authoritative)
+            if saved {
+                // Clear from pending queue
+                await MainActor.run { appState.markMealSynced(mealId) }
+
+                // Sync summary to DB
                 appState.invalidateDateCache()
                 await appState.recalculateDailySummary()
 
-                // Upload image in background (non-blocking for charts)
+                // Upload image in background (non-blocking)
                 if let imageData = savedImageData {
                     #if DEBUG
                     print("[Fuel] Uploading meal image (\(imageData.count) bytes)...")
@@ -1052,10 +1119,15 @@ struct LogFlowView: View {
                         }
                     }
                 }
-            } catch {
+            } else {
+                // All 3 attempts failed — meal stays in pending queue for next app open
                 #if DEBUG
-                print("[Fuel] Failed to save meal to database: \(error)")
+                print("[Fuel] Meal queued for retry: \(meal.displayName)")
                 #endif
+                await MainActor.run {
+                    appState.errorMessage = "Meal saved locally. It will sync when you're back online."
+                    appState.showingError = true
+                }
             }
         }
     }

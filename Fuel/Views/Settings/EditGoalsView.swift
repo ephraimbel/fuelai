@@ -10,8 +10,7 @@ struct EditGoalsView: View {
     @State private var targetFat: Int = 55
     @State private var waterGoalMl: Int = 2500
     @State private var goalType: GoalType = .maintain
-
-    private var isMetric: Bool { appState.userProfile?.unitSystem == .metric }
+    @State private var isMetric: Bool = true
 
     var body: some View {
         ScrollView {
@@ -125,6 +124,7 @@ struct EditGoalsView: View {
         }
         .onAppear {
             if let profile = appState.userProfile {
+                isMetric = profile.unitSystem == .metric
                 targetCalories = profile.targetCalories ?? 2000
                 targetProtein = profile.targetProtein ?? 150
                 targetCarbs = profile.targetCarbs ?? 250
@@ -224,7 +224,9 @@ struct EditGoalsView: View {
         profile.targetProtein = targetProtein
         profile.targetCarbs = targetCarbs
         profile.targetFat = targetFat
-        profile.waterGoalMl = isMetric ? waterGoalMl : Int(Double(waterGoalMl) * 29.5735)
+        // Round to nearest 50ml to prevent precision drift from oz↔ml conversion
+        let rawMl = isMetric ? waterGoalMl : Int(Double(waterGoalMl) * 29.5735)
+        profile.waterGoalMl = ((rawMl + 25) / 50) * 50
         profile.updatedAt = Date()
         appState.userProfile = profile
         FuelHaptics.shared.tap()

@@ -12,6 +12,7 @@ struct ShowcaseChatPage: View {
     @State private var showReply = false
     @State private var revealedChars = 0
     @State private var showChips = false
+    @State private var loopTask: Task<Void, Never>?
 
     private let replyText = "You're at 92g today — aim for 30g more at dinner to hit your 125g goal. Try grilled salmon or a Greek yogurt bowl."
 
@@ -217,12 +218,17 @@ struct ShowcaseChatPage: View {
             showFrame = true
             runLoop()
         }
+        .onDisappear {
+            loopTask?.cancel()
+            loopTask = nil
+        }
     }
 
     // MARK: - Looping Animation
 
     private func runLoop() {
-        Task { @MainActor in
+        loopTask?.cancel()
+        loopTask = Task { @MainActor in
             while !Task.isCancelled {
                 // Reset
                 showUserBubble = false

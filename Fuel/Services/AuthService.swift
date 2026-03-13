@@ -35,7 +35,7 @@ actor AuthService {
             updatedAt: Date()
         )
 
-        try await supabase.from("profiles").insert(profile).execute()
+        try await supabase.from("profiles").upsert(profile).execute()
         return profile
     }
 

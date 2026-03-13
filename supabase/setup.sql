@@ -61,6 +61,9 @@ CREATE TABLE IF NOT EXISTS meals (
     total_protein DOUBLE PRECISION NOT NULL,
     total_carbs DOUBLE PRECISION NOT NULL,
     total_fat DOUBLE PRECISION NOT NULL,
+    total_fiber DOUBLE PRECISION NOT NULL DEFAULT 0,
+    total_sugar DOUBLE PRECISION NOT NULL DEFAULT 0,
+    total_sodium DOUBLE PRECISION NOT NULL DEFAULT 0,
     image_url TEXT,
     logged_date TEXT NOT NULL,
     logged_at TIMESTAMPTZ DEFAULT NOW(),
@@ -76,7 +79,12 @@ CREATE TABLE IF NOT EXISTS meal_items (
     protein DOUBLE PRECISION NOT NULL,
     carbs DOUBLE PRECISION NOT NULL,
     fat DOUBLE PRECISION NOT NULL,
+    fiber DOUBLE PRECISION NOT NULL DEFAULT 0,
+    sugar DOUBLE PRECISION NOT NULL DEFAULT 0,
     serving_size TEXT,
+    estimated_grams DOUBLE PRECISION DEFAULT 0,
+    measurement_unit TEXT DEFAULT 'g',
+    measurement_amount DOUBLE PRECISION DEFAULT 1.0,
     quantity DOUBLE PRECISION DEFAULT 1.0,
     confidence DOUBLE PRECISION DEFAULT 0.8
 );
@@ -90,6 +98,9 @@ CREATE TABLE IF NOT EXISTS daily_summaries (
     total_protein DOUBLE PRECISION DEFAULT 0,
     total_carbs DOUBLE PRECISION DEFAULT 0,
     total_fat DOUBLE PRECISION DEFAULT 0,
+    total_fiber DOUBLE PRECISION DEFAULT 0,
+    total_sugar DOUBLE PRECISION DEFAULT 0,
+    total_sodium DOUBLE PRECISION DEFAULT 0,
     water_ml INTEGER DEFAULT 0,
     ai_insight TEXT,
     is_on_target BOOLEAN DEFAULT FALSE,
@@ -178,7 +189,9 @@ ALTER TABLE water_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE weight_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat_messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE favorite_meals ENABLE ROW LEVEL SECURITY;
-ALTER TABLE nutrition_logs ENABLE ROW LEVEL SECURITY;
+-- nutrition_logs is anonymized analytics (no user_id column) — RLS prevents reads
+-- which makes it useless for dashboards. Allow authenticated insert, service-role read.
+ALTER TABLE nutrition_logs DISABLE ROW LEVEL SECURITY;
 
 -- Drop existing policies first (safe to re-run)
 DROP POLICY IF EXISTS "Users own profile" ON profiles;
@@ -260,6 +273,11 @@ DECLARE
     streak INTEGER := 0;
     check_date TEXT;
 BEGIN
+    -- Verify caller is updating their own streak
+    IF auth.uid() != p_user_id THEN
+        RAISE EXCEPTION 'Not authorized';
+    END IF;
+
     check_date := TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD');
 
     LOOP
@@ -289,7 +307,8 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 CREATE OR REPLACE FUNCTION increment_favorite_use(p_id UUID)
 RETURNS VOID AS $$
 BEGIN
-    UPDATE favorite_meals SET use_count = use_count + 1 WHERE id = p_id;
+    UPDATE favorite_meals SET use_count = use_count + 1
+    WHERE id = p_id AND user_id = auth.uid();
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 

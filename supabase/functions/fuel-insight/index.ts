@@ -22,7 +22,7 @@ serve(async (req: Request) => {
     // Verify auth
     const authHeader = req.headers.get("Authorization")
     if (!authHeader) {
-      return jsonResponse({ insight: "Your day is waiting." })
+      return jsonResponse({ insight: "Your day is waiting." }, 401)
     }
 
     const supabase = createClient(
@@ -33,7 +33,7 @@ serve(async (req: Request) => {
 
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) {
-      return jsonResponse({ insight: "Your day is waiting." })
+      return jsonResponse({ insight: "Your day is waiting." }, 401)
     }
 
     const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY")

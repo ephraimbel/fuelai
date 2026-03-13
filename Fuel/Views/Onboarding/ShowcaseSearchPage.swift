@@ -12,6 +12,7 @@ struct ShowcaseSearchPage: View {
     @State private var showResult2 = false
     @State private var showResult3 = false
     @State private var showButton = false
+    @State private var loopTask: Task<Void, Never>?
 
     private let searchText = "Steak with sweet potato"
 
@@ -166,6 +167,10 @@ struct ShowcaseSearchPage: View {
             showFrame = true
             runLoop()
         }
+        .onDisappear {
+            loopTask?.cancel()
+            loopTask = nil
+        }
     }
 
     // MARK: - Autocomplete Row (matches real SearchLogView)
@@ -206,7 +211,8 @@ struct ShowcaseSearchPage: View {
     // MARK: - Looping Animation
 
     private func runLoop() {
-        Task { @MainActor in
+        loopTask?.cancel()
+        loopTask = Task { @MainActor in
             while !Task.isCancelled {
                 // Reset
                 revealedChars = 0

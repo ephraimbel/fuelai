@@ -2,7 +2,7 @@ import Foundation
 import Speech
 import AVFoundation
 
-@Observable
+@MainActor @Observable
 final class SpeechService {
     var isListening = false
     var transcript = ""
@@ -81,13 +81,12 @@ final class SpeechService {
 
         recognitionTask = recognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
             guard let self else { return }
+            let text = result?.bestTranscription.formattedString
+            let shouldStop = error != nil || (result?.isFinal ?? false)
 
-            if let result {
-                self.transcript = result.bestTranscription.formattedString
-            }
-
-            if error != nil || (result?.isFinal ?? false) {
-                self.stopAudioEngine()
+            Task { @MainActor in
+                if let text { self.transcript = text }
+                if shouldStop { self.stopAudioEngine() }
             }
         }
 

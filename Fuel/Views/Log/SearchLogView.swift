@@ -3,22 +3,28 @@ import SwiftUI
 struct SearchLogView: View {
     @Environment(AppState.self) private var appState
     @Environment(SubscriptionService.self) private var subscriptionService
+
+    /// Called for database search results: (query, exactFoodItem?)
     let onSearch: (String, FoodItem?) -> Void
+    /// Called for AI describe mode: (description)
+    let onDescribe: (String) -> Void
+    /// Quick-log a food at default serving without showing results screen
     var onQuickLog: ((FoodItem) -> Void)? = nil
+    /// Pre-fill the search field (e.g. from HomeView quick action)
+    var initialQuery: String? = nil
+
     @State private var query = ""
     @FocusState private var isFocused: Bool
 
+    /// Two distinct modes: database search vs AI describe
+    @State private var isDescribeMode = false
     @State private var selectedCategory: QuickCategory = .popular
     @State private var didSetInitialCategory = false
-    @State private var debouncedQuery = ""
     @State private var debounceTask: Task<Void, Never>?
     @State private var cachedAutocomplete: [RetrievalResult] = []
     @State private var usdaResults: [FoodItem] = []
     @State private var isSearchingUSDA = false
-
-    private var frequentMeals: [(name: String, calories: Int, count: Int)] {
-        MealHistoryService.shared.topMeals(limit: 6)
-    }
+    @State private var showingPaywall = false
 
     private var recentMeals: [(name: String, calories: Int)] {
         MealHistoryService.shared.recentMeals(limit: 8)
@@ -27,10 +33,8 @@ struct SearchLogView: View {
     /// Pick the best default category based on time of day and what's already been logged.
     private var smartDefaultCategory: QuickCategory {
         let hour = Calendar.current.component(.hour, from: Date())
-        let todayCalories = appState.caloriesConsumed
-
-        // If nothing logged yet, suggest the current meal period
-        if todayCalories == 0 {
+        let cals = appState.caloriesConsumed
+        if cals == 0 {
             switch hour {
             case 5..<11: return .breakfast
             case 11..<15: return .lunch
@@ -39,21 +43,12 @@ struct SearchLogView: View {
             default: return .snacks
             }
         }
-
-        // If something's been logged, suggest what's likely next
         switch hour {
-        case 5..<11:
-            // Morning — suggest breakfast unless they already logged 300+ cal (probably had breakfast)
-            return todayCalories < 300 ? .breakfast : .snacks
-        case 11..<15:
-            // Midday — lunch unless they already have 800+ cal
-            return todayCalories < 800 ? .lunch : .snacks
-        case 15..<17:
-            return .snacks
-        case 17..<22:
-            return .dinner
-        default:
-            return .snacks
+        case 5..<11: return cals < 300 ? .breakfast : .snacks
+        case 11..<15: return cals < 800 ? .lunch : .snacks
+        case 15..<17: return .snacks
+        case 17..<22: return .dinner
+        default: return .snacks
         }
     }
 
@@ -71,7 +66,7 @@ struct SearchLogView: View {
 
         var icon: String {
             switch self {
-            case .popular: return "flame.fill"
+            case .popular: return "FlameIcon"
             case .breakfast: return "sunrise.fill"
             case .lunch: return "sun.max.fill"
             case .dinner: return "moon.stars.fill"
@@ -208,6 +203,8 @@ struct SearchLogView: View {
         }
     }
 
+    // MARK: - Body
+
     var body: some View {
         ScrollView {
             VStack(spacing: FuelSpacing.lg) {
@@ -216,30 +213,40 @@ struct SearchLogView: View {
                     remainingMacrosCard
                 }
 
-                // Search field
-                AISearchBar(
-                    query: $query,
-                    isFocused: $isFocused,
-                    isPremium: subscriptionService.isPremium,
-                    onSubmit: { submitSearch() },
-                    onClear: {
-                        query = ""
-                        usdaResults = []
-                    }
-                )
-                .padding(.horizontal, FuelSpacing.xl)
-
-                // Active search state
-                if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    searchActiveContent
+                // Mode toggle + search bar
+                if isDescribeMode {
+                    describeBar
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .scale(scale: 0.95, anchor: .top)).combined(with: .offset(y: -8)),
+                            removal: .opacity.combined(with: .scale(scale: 0.95, anchor: .top))
+                        ))
                 } else {
-                    // Browse state
+                    searchBar
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .scale(scale: 0.95, anchor: .top)).combined(with: .offset(y: -8)),
+                            removal: .opacity.combined(with: .scale(scale: 0.95, anchor: .top))
+                        ))
+                }
+
+                // Content based on mode
+                if isDescribeMode {
+                    describeContent
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .offset(y: 12)),
+                            removal: .opacity
+                        ))
+                } else if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    searchActiveContent
+                        .transition(.opacity)
+                } else {
                     browseContent
+                        .transition(.opacity)
                 }
 
                 Spacer(minLength: FuelSpacing.section)
             }
             .padding(.top, FuelSpacing.lg)
+            .animation(FuelAnimation.snappy, value: isDescribeMode)
         }
         .scrollDismissesKeyboard(.interactively)
         .onAppear {
@@ -248,8 +255,12 @@ struct SearchLogView: View {
                 didSetInitialCategory = true
                 selectedCategory = smartDefaultCategory
             }
+            if let initial = initialQuery, !initial.isEmpty, query.isEmpty {
+                query = initial
+            }
         }
         .onChange(of: query) { _, newValue in
+            guard !isDescribeMode else { return } // Don't autocomplete in describe mode
             if newValue.count > 200 { query = String(newValue.prefix(200)); return }
             debounceTask?.cancel()
             let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -261,11 +272,9 @@ struct SearchLogView: View {
             debounceTask = Task {
                 try? await Task.sleep(for: .milliseconds(150))
                 guard !Task.isCancelled else { return }
-                // Local RAG search (instant)
                 let results = NutritionRAG.shared.retrieve(query: trimmed, topK: 8)
                 await MainActor.run { cachedAutocomplete = results }
 
-                // If local results are weak, search USDA in background
                 let bestScore = results.first?.score ?? 0
                 if bestScore < 5.0 && trimmed.count >= 3 {
                     await MainActor.run { isSearchingUSDA = true }
@@ -282,13 +291,316 @@ struct SearchLogView: View {
         }
     }
 
+    // MARK: - Search Bar (plain, database mode)
+
+    private var searchBar: some View {
+        VStack(spacing: FuelSpacing.sm) {
+            HStack(spacing: FuelSpacing.sm) {
+                Image(systemName: "magnifyingglass")
+                    .font(FuelType.cardTitle)
+                    .foregroundStyle(FuelColors.stone)
+
+                TextField("Search food...", text: $query)
+                    .font(FuelType.body)
+                    .foregroundStyle(FuelColors.ink)
+                    .submitLabel(.search)
+                    .focused($isFocused)
+                    .onSubmit { submitDatabaseSearch() }
+
+                if !query.isEmpty {
+                    Button {
+                        query = ""
+                        usdaResults = []
+                        cachedAutocomplete = []
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(FuelType.iconMd)
+                            .foregroundStyle(FuelColors.fog)
+                    }
+                }
+            }
+            .padding(.horizontal, FuelSpacing.lg)
+            .padding(.vertical, FuelSpacing.md)
+            .background(FuelColors.cloud)
+            .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
+            .padding(.horizontal, FuelSpacing.xl)
+
+            // "Describe with AI" toggle button
+            describeToggleButton
+        }
+    }
+
+    // MARK: - Describe Bar (AI mode, gradient)
+
+    private var describeBar: some View {
+        VStack(spacing: FuelSpacing.sm) {
+            TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { context in
+                let t = context.date.timeIntervalSinceReferenceDate
+                let phase = t.remainder(dividingBy: 4.0) / 4.0
+                let shimmerX = phase * 1.4 - 0.2
+
+                HStack(spacing: FuelSpacing.sm) {
+                    Image(systemName: "sparkles")
+                        .font(FuelType.cardTitle)
+                        .foregroundStyle(FuelColors.flame)
+
+                    TextField("Describe what you ate...", text: $query)
+                        .font(FuelType.body)
+                        .foregroundStyle(FuelColors.ink)
+                        .submitLabel(.search)
+                        .focused($isFocused)
+                        .onSubmit { submitDescribe() }
+
+                    if !query.isEmpty {
+                        Button {
+                            query = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(FuelType.iconMd)
+                                .foregroundStyle(FuelColors.fog)
+                        }
+                    }
+                }
+                .padding(.horizontal, FuelSpacing.lg)
+                .padding(.vertical, FuelSpacing.md)
+                .background(FuelColors.cloud)
+                .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
+                .overlay(
+                    RoundedRectangle(cornerRadius: FuelRadius.md)
+                        .stroke(
+                            LinearGradient(
+                                colors: [
+                                    FuelColors.flame.opacity(0.25),
+                                    FuelColors.flame.opacity(0.5),
+                                    Color(hex: "#FF8040").opacity(0.4),
+                                    FuelColors.flame.opacity(0.25),
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            ),
+                            lineWidth: 1.5
+                        )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: FuelRadius.md)
+                        .stroke(
+                            LinearGradient(
+                                stops: [
+                                    .init(color: .clear, location: max(0, shimmerX - 0.1)),
+                                    .init(color: .white.opacity(0.35), location: shimmerX),
+                                    .init(color: .clear, location: min(1, shimmerX + 0.1)),
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            ),
+                            lineWidth: 1.5
+                        )
+                )
+            }
+            .padding(.horizontal, FuelSpacing.xl)
+
+            // Back to search toggle
+            Button {
+                withAnimation(FuelAnimation.snappy) {
+                    isDescribeMode = false
+                    query = ""
+                }
+                isFocused = true
+                FuelHaptics.shared.tap()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11, weight: .medium))
+                    Text("Back to search")
+                        .font(FuelType.label)
+                }
+                .foregroundStyle(FuelColors.stone)
+            }
+        }
+    }
+
+    // MARK: - Describe Toggle Button
+
+    private var describeToggleButton: some View {
+        Button {
+            if subscriptionService.isPremium {
+                withAnimation(FuelAnimation.snappy) {
+                    isDescribeMode = true
+                    query = ""
+                }
+                isFocused = true
+            } else {
+                showingPaywall = true
+            }
+            FuelHaptics.shared.tap()
+        } label: {
+            HStack(spacing: FuelSpacing.xs) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(FuelColors.flame)
+                Text(subscriptionService.isPremium ? "Describe with AI" : "Describe with AI")
+                    .font(FuelType.label)
+                    .foregroundStyle(FuelColors.flame)
+                if !subscriptionService.isPremium {
+                    Text("PRO")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(FuelColors.onDark)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule().fill(FuelColors.flame)
+                        )
+                }
+            }
+            .padding(.horizontal, FuelSpacing.md)
+            .padding(.vertical, 6)
+            .background(
+                Capsule()
+                    .fill(FuelColors.flame.opacity(0.08))
+            )
+        }
+        .sheet(isPresented: $showingPaywall) {
+            UpgradePaywallView(reason: .aiDescribe)
+        }
+    }
+
+    // MARK: - Describe Content
+
+    private var describeContent: some View {
+        VStack(spacing: FuelSpacing.lg) {
+            // Examples
+            VStack(alignment: .leading, spacing: FuelSpacing.sm) {
+                Text("Try describing your meal")
+                    .font(FuelType.label)
+                    .foregroundStyle(FuelColors.stone)
+                    .padding(.horizontal, FuelSpacing.xl)
+
+                let examples = [
+                    ("🍔", "In-N-Out double-double with animal fries"),
+                    ("🥗", "Grilled chicken salad with ranch dressing"),
+                    ("🌯", "Chipotle burrito bowl with chicken, rice, beans, cheese"),
+                    ("🍳", "3 scrambled eggs with 2 slices of toast and butter"),
+                    ("🍝", "Spaghetti bolognese with garlic bread"),
+                    ("🥪", "Turkey club sandwich, no mayo"),
+                ]
+
+                ForEach(Array(examples.enumerated()), id: \.offset) { index, example in
+                    Button {
+                        query = example.1
+                        isFocused = false
+                        FuelHaptics.shared.tap()
+                        submitDescribe()
+                    } label: {
+                        HStack(spacing: FuelSpacing.md) {
+                            Text(example.0)
+                                .font(.system(size: 20))
+                                .frame(width: 28)
+
+                            Text(example.1)
+                                .font(FuelType.body)
+                                .foregroundStyle(FuelColors.ink)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+
+                            Spacer()
+
+                            Image(systemName: "arrow.up.left")
+                                .font(FuelType.micro)
+                                .foregroundStyle(FuelColors.fog)
+                        }
+                        .padding(.horizontal, FuelSpacing.lg)
+                        .padding(.vertical, FuelSpacing.md)
+                        .background(
+                            RoundedRectangle(cornerRadius: FuelRadius.sm)
+                                .fill(FuelColors.cloud)
+                        )
+                    }
+                    .pressable()
+                    .staggeredAppear(index: index)
+                }
+            }
+            .padding(.horizontal, FuelSpacing.xl)
+
+            // Analyze button (only when text is entered)
+            if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                describeAnalyzeButton
+            }
+        }
+    }
+
+    // MARK: - Describe Analyze Button
+
+    private var describeAnalyzeButton: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            let phase = t.remainder(dividingBy: 4.0) / 4.0
+            let shimmerX = phase * 1.4 - 0.2
+            let glowPulse = 0.3 + 0.15 * sin(t * 2.0)
+
+            Button { submitDescribe() } label: {
+                HStack(spacing: FuelSpacing.sm) {
+                    Image(systemName: "sparkles")
+                        .font(FuelType.iconSm)
+                        .foregroundStyle(FuelColors.flame)
+                    Text("Analyze with AI")
+                        .font(FuelType.cardTitle)
+                        .foregroundStyle(FuelColors.ink)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, FuelSpacing.lg)
+                .background(FuelColors.white)
+                .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
+                .overlay(
+                    RoundedRectangle(cornerRadius: FuelRadius.md)
+                        .stroke(
+                            LinearGradient(
+                                colors: [
+                                    FuelColors.flame.opacity(0.35),
+                                    FuelColors.flame.opacity(0.6),
+                                    Color(hex: "#FF8040").opacity(0.5),
+                                    FuelColors.flame.opacity(0.35),
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            ),
+                            lineWidth: 2
+                        )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: FuelRadius.md)
+                        .stroke(
+                            LinearGradient(
+                                stops: [
+                                    .init(color: .clear, location: max(0, shimmerX - 0.12)),
+                                    .init(color: .white.opacity(0.6), location: shimmerX),
+                                    .init(color: .clear, location: min(1, shimmerX + 0.12)),
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            ),
+                            lineWidth: 2
+                        )
+                )
+                .shadow(color: FuelColors.flame.opacity(glowPulse), radius: 12, y: 2)
+                .shadow(color: Color(hex: "#FF8040").opacity(glowPulse * 0.5), radius: 20, y: 4)
+            }
+            .pressable()
+            .accessibilityLabel("Analyze with AI")
+        }
+        .padding(.horizontal, FuelSpacing.xl)
+    }
+
     // MARK: - Remaining Macros Card
 
     private var remainingMacrosCard: some View {
-        let isOver = appState.caloriesRemaining <= 0
+        let rawCalRemaining = appState.calorieTarget - appState.caloriesConsumed
+        let rawProteinRemaining = Double(appState.proteinTarget) - appState.proteinConsumed
+        let rawCarbsRemaining = Double(appState.carbsTarget) - appState.carbsConsumed
+        let rawFatRemaining = Double(appState.fatTarget) - appState.fatConsumed
+        let isOver = rawCalRemaining < 0
         return HStack(spacing: FuelSpacing.lg) {
             VStack(spacing: 2) {
-                Text("\(abs(appState.caloriesRemaining))")
+                Text("\(abs(rawCalRemaining))")
                     .font(FuelType.stat)
                     .foregroundStyle(isOver ? FuelColors.over : FuelColors.flame)
                 Text(isOver ? "cal over" : "cal left")
@@ -297,25 +609,25 @@ struct SearchLogView: View {
             }
             Divider().frame(height: 28)
             VStack(spacing: 2) {
-                Text("\(abs(Int(appState.proteinRemaining)))g")
+                Text("\(abs(Int(rawProteinRemaining)))g")
                     .font(FuelType.label)
-                    .foregroundStyle(appState.proteinRemaining < 0 ? FuelColors.over : FuelColors.protein)
+                    .foregroundStyle(rawProteinRemaining < 0 ? FuelColors.over : FuelColors.protein)
                 Text("protein")
                     .font(FuelType.micro)
                     .foregroundStyle(FuelColors.stone)
             }
             VStack(spacing: 2) {
-                Text("\(abs(Int(appState.carbsRemaining)))g")
+                Text("\(abs(Int(rawCarbsRemaining)))g")
                     .font(FuelType.label)
-                    .foregroundStyle(appState.carbsRemaining < 0 ? FuelColors.over : FuelColors.carbs)
+                    .foregroundStyle(rawCarbsRemaining < 0 ? FuelColors.over : FuelColors.carbs)
                 Text("carbs")
                     .font(FuelType.micro)
                     .foregroundStyle(FuelColors.stone)
             }
             VStack(spacing: 2) {
-                Text("\(abs(Int(appState.fatRemaining)))g")
+                Text("\(abs(Int(rawFatRemaining)))g")
                     .font(FuelType.label)
-                    .foregroundStyle(appState.fatRemaining < 0 ? FuelColors.over : FuelColors.fat)
+                    .foregroundStyle(rawFatRemaining < 0 ? FuelColors.over : FuelColors.fat)
                 Text("fat")
                     .font(FuelType.micro)
                     .foregroundStyle(FuelColors.stone)
@@ -331,11 +643,10 @@ struct SearchLogView: View {
         .padding(.horizontal, FuelSpacing.xl)
     }
 
-    // MARK: - Search Active Content
+    // MARK: - Search Active Content (database results)
 
     private var searchActiveContent: some View {
         VStack(spacing: FuelSpacing.lg) {
-            // Combined autocomplete results (local + USDA)
             let localMatches = cachedAutocomplete.filter { $0.score >= 2.0 }
             let allResults = mergedSearchResults(local: localMatches, usda: usdaResults)
 
@@ -374,8 +685,24 @@ struct SearchLogView: View {
                 }
             }
 
-            // AI Analyze / Look up button
-            analyzeButton
+            // Database lookup button (when query doesn't match autocomplete well)
+            Button { submitDatabaseSearch() } label: {
+                HStack(spacing: FuelSpacing.sm) {
+                    Image(systemName: "magnifyingglass")
+                        .font(FuelType.iconSm)
+                    Text("Look up \"\(query.trimmingCharacters(in: .whitespacesAndNewlines).prefix(30))\"")
+                        .font(FuelType.cardTitle)
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, FuelSpacing.lg)
+                .background(FuelColors.buttonFill)
+                .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
+            }
+            .pressable()
+            .padding(.horizontal, FuelSpacing.xl)
+            .accessibilityLabel("Look up nutrition")
         }
     }
 
@@ -383,29 +710,6 @@ struct SearchLogView: View {
 
     private var browseContent: some View {
         VStack(spacing: FuelSpacing.xl) {
-            // Upgrade nudge for free users
-            if !subscriptionService.isPremium {
-                Button {
-                    // Will be handled by existing paywall flow
-                } label: {
-                    HStack(spacing: FuelSpacing.sm) {
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(FuelColors.flame)
-                        Text("Upgrade to AI Search — describe any meal naturally")
-                            .font(FuelType.micro)
-                            .foregroundStyle(FuelColors.stone)
-                    }
-                    .padding(.horizontal, FuelSpacing.lg)
-                    .padding(.vertical, FuelSpacing.sm)
-                    .background(
-                        Capsule()
-                            .fill(FuelColors.flame.opacity(0.06))
-                    )
-                }
-                .padding(.horizontal, FuelSpacing.xl)
-            }
-
             // Recent meals
             if !recentMeals.isEmpty {
                 recentMealsSection
@@ -480,8 +784,17 @@ struct SearchLogView: View {
                         FuelHaptics.shared.tap()
                     } label: {
                         HStack(spacing: 4) {
-                            Image(systemName: category.icon)
-                                .font(.system(size: 11, weight: .medium))
+                            Group {
+                                if category.icon == "FlameIcon" {
+                                    Image("FlameIcon")
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: 13, height: 13)
+                                } else {
+                                    Image(systemName: category.icon)
+                                        .font(.system(size: 11, weight: .medium))
+                                }
+                            }
                             Text(category.rawValue)
                                 .font(FuelType.label)
                         }
@@ -508,7 +821,6 @@ struct SearchLogView: View {
                 Button {
                     isFocused = false
                     FuelHaptics.shared.tap()
-                    // Try RAG match first for instant results
                     let ragFood = NutritionRAG.shared.retrieve(query: food.name, topK: 1).first(where: { $0.score >= 3.0 })?.food
                     onSearch(food.name, ragFood)
                 } label: {
@@ -517,12 +829,10 @@ struct SearchLogView: View {
                             .font(.system(size: 20))
                             .frame(width: 28)
 
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(food.name)
-                                .font(FuelType.body)
-                                .foregroundStyle(FuelColors.ink)
-                                .lineLimit(1)
-                        }
+                        Text(food.name)
+                            .font(FuelType.body)
+                            .foregroundStyle(FuelColors.ink)
+                            .lineLimit(1)
 
                         Spacer()
 
@@ -547,98 +857,12 @@ struct SearchLogView: View {
             }
         }
         .padding(.horizontal, FuelSpacing.xl)
-        .id(selectedCategory) // Reset animation when category changes
-    }
-
-    // MARK: - Analyze Button
-
-    private var analyzeButton: some View {
-        Group {
-            if subscriptionService.isPremium {
-                // Premium: animated gradient border + glow button
-                TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { context in
-                    let t = context.date.timeIntervalSinceReferenceDate
-                    let phase = t.remainder(dividingBy: 4.0) / 4.0
-                    let shimmerX = phase * 1.4 - 0.2
-                    let glowPulse = 0.3 + 0.15 * sin(t * 2.0)
-
-                    Button { submitSearch() } label: {
-                        HStack(spacing: FuelSpacing.sm) {
-                            Image(systemName: "sparkles")
-                                .font(FuelType.iconSm)
-                                .foregroundStyle(FuelColors.flame)
-                            Text("Analyze with AI")
-                                .font(FuelType.cardTitle)
-                                .foregroundStyle(FuelColors.ink)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, FuelSpacing.lg)
-                        .background(FuelColors.white)
-                        .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: FuelRadius.md)
-                                .stroke(
-                                    LinearGradient(
-                                        colors: [
-                                            FuelColors.flame.opacity(0.35),
-                                            FuelColors.flame.opacity(0.6),
-                                            Color(hex: "#FF8040").opacity(0.5),
-                                            FuelColors.flame.opacity(0.35),
-                                        ],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
-                                    ),
-                                    lineWidth: 2
-                                )
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: FuelRadius.md)
-                                .stroke(
-                                    LinearGradient(
-                                        stops: [
-                                            .init(color: .clear, location: max(0, shimmerX - 0.12)),
-                                            .init(color: .white.opacity(0.6), location: shimmerX),
-                                            .init(color: .clear, location: min(1, shimmerX + 0.12)),
-                                        ],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
-                                    ),
-                                    lineWidth: 2
-                                )
-                        )
-                        .shadow(color: FuelColors.flame.opacity(glowPulse), radius: 12, y: 2)
-                        .shadow(color: Color(hex: "#FF8040").opacity(glowPulse * 0.5), radius: 20, y: 4)
-                    }
-                    .pressable()
-                    .accessibilityLabel("Analyze with AI")
-                    .accessibilityHint("Analyzes your food description for nutrition information")
-                }
-                .padding(.horizontal, FuelSpacing.xl)
-            } else {
-                Button { submitSearch() } label: {
-                    HStack(spacing: FuelSpacing.sm) {
-                        Image(systemName: "magnifyingglass")
-                            .font(FuelType.iconSm)
-                        Text("Look up nutrition")
-                            .font(FuelType.cardTitle)
-                    }
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, FuelSpacing.lg)
-                    .background(FuelColors.buttonFill)
-                    .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
-                }
-                .pressable()
-                .padding(.horizontal, FuelSpacing.xl)
-                .accessibilityLabel("Look up nutrition")
-                .accessibilityHint("Analyzes your food description for nutrition information")
-            }
-        }
+        .id(selectedCategory)
     }
 
     // MARK: - Search Result Row
 
-    private func searchResultRow(item: SearchResult, showQuickLog: Bool = true) -> some View {
+    private func searchResultRow(item: SearchResult) -> some View {
         HStack(spacing: FuelSpacing.md) {
             Image(systemName: item.isUSDA ? "leaf.fill" : "magnifyingglass")
                 .font(FuelType.micro)
@@ -682,8 +906,8 @@ struct SearchLogView: View {
                     .foregroundStyle(FuelColors.fog)
             }
 
-            // Quick-log button: tap to log at default serving instantly
-            if showQuickLog, let food = item.food, onQuickLog != nil {
+            // Quick-log button
+            if let food = item.food, onQuickLog != nil {
                 Button {
                     FuelHaptics.shared.tap()
                     onQuickLog?(food)
@@ -717,15 +941,22 @@ struct SearchLogView: View {
         let isUSDA: Bool
     }
 
+    /// Normalize name for dedup: lowercase, strip parentheticals and extra whitespace
+    private func deduplicationKey(_ name: String) -> String {
+        name.lowercased()
+            .replacingOccurrences(of: #"\s*\(.*?\)"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
     private func mergedSearchResults(local: [RetrievalResult], usda: [FoodItem]) -> [SearchResult] {
         var results: [SearchResult] = []
-        var seenNames: Set<String> = []
+        var seenKeys: Set<String> = []
 
-        // Local RAG results first (higher confidence, instant)
         for result in local {
-            let key = result.food.name.lowercased()
-            guard !seenNames.contains(key) else { continue }
-            seenNames.insert(key)
+            let key = deduplicationKey(result.food.name)
+            guard !seenKeys.contains(key) else { continue }
+            seenKeys.insert(key)
             results.append(SearchResult(
                 name: result.food.name,
                 calories: result.food.calories,
@@ -738,11 +969,10 @@ struct SearchLogView: View {
             ))
         }
 
-        // USDA results (deduplicated)
         for food in usda {
-            let key = food.name.lowercased()
-            guard !seenNames.contains(key) else { continue }
-            seenNames.insert(key)
+            let key = deduplicationKey(food.name)
+            guard !seenKeys.contains(key) else { continue }
+            seenKeys.insert(key)
             results.append(SearchResult(
                 name: food.name,
                 calories: food.calories,
@@ -758,94 +988,21 @@ struct SearchLogView: View {
         return results
     }
 
-    private func submitSearch() {
+    /// Database search — uses local RAG + USDA, no AI
+    private func submitDatabaseSearch() {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         isFocused = false
         FuelHaptics.shared.tap()
         onSearch(text, nil)
     }
-}
 
-// MARK: - AI Search Bar
-
-private struct AISearchBar: View {
-    @Binding var query: String
-    var isFocused: FocusState<Bool>.Binding
-    let isPremium: Bool
-    let onSubmit: () -> Void
-    let onClear: () -> Void
-
-    var body: some View {
-        if isPremium {
-            // Premium: animated gradient border
-            TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { context in
-                let t = context.date.timeIntervalSinceReferenceDate
-                let phase = t.remainder(dividingBy: 4.0) / 4.0
-                let shimmerX = phase * 1.4 - 0.2
-
-                searchField(placeholder: "Describe what you ate...")
-                    .overlay(
-                        RoundedRectangle(cornerRadius: FuelRadius.md)
-                            .stroke(
-                                LinearGradient(
-                                    colors: [
-                                        FuelColors.flame.opacity(0.25),
-                                        FuelColors.flame.opacity(0.4),
-                                        Color(hex: "#FF8040").opacity(0.3),
-                                        FuelColors.flame.opacity(0.25),
-                                    ],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                ),
-                                lineWidth: 1.5
-                            )
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: FuelRadius.md)
-                            .stroke(
-                                LinearGradient(
-                                    stops: [
-                                        .init(color: .clear, location: max(0, shimmerX - 0.1)),
-                                        .init(color: .white.opacity(0.3), location: shimmerX),
-                                        .init(color: .clear, location: min(1, shimmerX + 0.1)),
-                                    ],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                ),
-                                lineWidth: 1.5
-                            )
-                    )
-            }
-        } else {
-            searchField(placeholder: "Search food or describe a meal...")
-        }
-    }
-
-    private func searchField(placeholder: String) -> some View {
-        HStack(spacing: FuelSpacing.sm) {
-            Image(systemName: isPremium ? "sparkles" : "magnifyingglass")
-                .font(FuelType.cardTitle)
-                .foregroundStyle(isPremium ? FuelColors.flame : FuelColors.stone)
-
-            TextField(placeholder, text: $query)
-                .font(FuelType.body)
-                .foregroundStyle(FuelColors.ink)
-                .submitLabel(.search)
-                .focused(isFocused)
-                .onSubmit { onSubmit() }
-
-            if !query.isEmpty {
-                Button(action: onClear) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(FuelType.iconMd)
-                        .foregroundStyle(FuelColors.fog)
-                }
-            }
-        }
-        .padding(.horizontal, FuelSpacing.lg)
-        .padding(.vertical, FuelSpacing.md)
-        .background(FuelColors.cloud)
-        .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
+    /// AI describe — sends to AI edge function for full ingredient itemization
+    private func submitDescribe() {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        isFocused = false
+        FuelHaptics.shared.tap()
+        onDescribe(text)
     }
 }

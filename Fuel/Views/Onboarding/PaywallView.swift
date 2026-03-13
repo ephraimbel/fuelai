@@ -350,8 +350,21 @@ struct PaywallView: View {
                     await MainActor.run {
                         appState.userProfile = profile
                         appState.isAuthenticated = true
-                        isSigningIn = false
-                        onComplete()
+                    }
+                    // Purchase the selected plan after sign-in
+                    if let product = subscriptionService.products.first(where: { $0.id == selectedPlan }) {
+                        let success = try await subscriptionService.purchase(product)
+                        await MainActor.run {
+                            isSigningIn = false
+                            if success {
+                                onComplete()
+                            }
+                        }
+                    } else {
+                        await MainActor.run {
+                            isSigningIn = false
+                            onComplete()
+                        }
                     }
                 } catch {
                     await MainActor.run {

@@ -73,7 +73,7 @@ struct FoodResultsView: View {
             saturatedFatG: analysis.saturatedFatG.map { round($0 * microScale * 10) / 10 },
             healthScore: analysis.healthScore,
             healthScoreReason: analysis.healthScoreReason,
-            warnings: nil,
+            warnings: analysis.warnings,
             healthInsight: analysis.healthInsight,
             calorieRange: analysis.calorieRange,
             confidenceReason: analysis.confidenceReason,
@@ -474,7 +474,14 @@ struct FoodResultsView: View {
                 ),
                 quantity: Binding(
                     get: { quantities[item.id] ?? 1.0 },
-                    set: { quantities[item.id] = $0 }
+                    set: { newQty in
+                        quantities[item.id] = newQty
+                        // Clear manual overrides so macros scale with the new quantity
+                        calorieOverrides.removeValue(forKey: item.id)
+                        proteinOverrides.removeValue(forKey: item.id)
+                        carbsOverrides.removeValue(forKey: item.id)
+                        fatOverrides.removeValue(forKey: item.id)
+                    }
                 ),
                 calorieOverride: Binding(
                     get: { calorieOverrides[item.id] },

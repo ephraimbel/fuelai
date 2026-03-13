@@ -197,6 +197,8 @@ struct OnboardingContainerView: View {
         profile.updatedAt = Date()
         appState.userProfile = profile
 
+        appState.hasCompletedOnboarding = true
+
         // Persist profile for both authenticated and anonymous users
         if sessionUserId != nil {
             Task {
@@ -206,7 +208,10 @@ struct OnboardingContainerView: View {
             }
         }
 
-        appState.hasCompletedOnboarding = true
+        // Also persist profile locally so it survives app kill before DB write completes
+        if let data = try? JSONEncoder().encode(profile) {
+            UserDefaults.standard.set(data, forKey: "fuel_local_profile")
+        }
 
         // Request notification permission after onboarding completes
         Task {

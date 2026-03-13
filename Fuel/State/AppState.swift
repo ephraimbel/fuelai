@@ -14,8 +14,16 @@ final class AppState {
 
     // Today's Data
     var todaySummary: DailySummary?
-    var todayMeals: [Meal] = []
+    var todayMeals: [Meal] = [] {
+        didSet { persistMealsLocally() }
+    }
     var todayWaterMl: Int = 0
+
+    // IDs of meals that haven't been confirmed saved to Supabase yet
+    private var unsyncedMealIds: Set<UUID> = []
+
+    // Guard flag to prevent didSet from re-persisting during loadLocalMeals()
+    private var isLoadingLocalMeals = false
 
     // Targets (computed from profile)
     var calorieTarget: Int { userProfile?.targetCalories ?? 2000 }
@@ -54,12 +62,24 @@ final class AppState {
 
     func logWater(amountMl: Int) async {
         guard let profile = userProfile else { return }
+        // Snapshot before optimistic update for safe rollback
+        let snapshot = todayWaterMl
         // Optimistic update — animate the UI immediately
         await MainActor.run {
             todayWaterMl += amountMl
         }
-        // Persist to database (fire-and-forget)
-        try? await databaseService?.logWater(userId: profile.id, amountMl: amountMl)
+        // Persist to database — roll back on failure
+        do {
+            try await databaseService?.logWater(userId: profile.id, amountMl: amountMl)
+        } catch {
+            #if DEBUG
+            print("[Fuel] Water log failed, rolling back: \(error)")
+            #endif
+            await MainActor.run {
+                todayWaterMl = snapshot
+            }
+            return
+        }
         // Update summary in DB so progress page reflects water changes
         await recalculateDailySummary()
     }
@@ -189,13 +209,34 @@ final class AppState {
                 let cacheHadData = self.dateCache[dateStr] != nil && (self.todaySummary != nil || !self.todayMeals.isEmpty)
 
                 if dbHasData || !cacheHadData {
-                    self.todayMeals = meals
+                    // Merge: keep any locally-added meals that haven't synced to DB yet
+                    var mergedMeals = meals
+                    let dbIds = Set(meals.map(\.id))
+                    for unsyncedId in self.unsyncedMealIds {
+                        if !dbIds.contains(unsyncedId),
+                           let localMeal = self.todayMeals.first(where: { $0.id == unsyncedId }) {
+                            mergedMeals.append(localMeal)
+                        }
+                    }
+                    // Deduplicate by meal ID (safety net against edge cases)
+                    var seen = Set<UUID>()
+                    mergedMeals = mergedMeals.filter { seen.insert($0.id).inserted }
+
+                    // Sort by logged time (newest first) to match DB order
+                    mergedMeals.sort { $0.loggedAt > $1.loggedAt }
+
+                    self.todayMeals = mergedMeals
                     self.todaySummary = summary
                     self.todayWaterMl = water
 
+                    // If we merged unsynced meals, rebuild summary to include them
+                    if mergedMeals.count > meals.count {
+                        self.rebuildSummaryFromMeals()
+                    }
+
                     // Update cache
                     self.dateCache[dateStr] = DateCacheEntry(
-                        summary: summary, meals: meals, water: water, cachedAt: Date()
+                        summary: self.todaySummary, meals: mergedMeals, water: water, cachedAt: Date()
                     )
                 }
 
@@ -238,6 +279,10 @@ final class AppState {
         ClaudeNutritionService.shared.apiKey = ""
 
         // Clear local caches and rate limit counters
+        clearLocalMeals()
+        UserDefaults.standard.removeObject(forKey: Self.pendingMealsKey)
+        UserDefaults.standard.removeObject(forKey: "fuel_local_profile")
+        unsyncedMealIds = []
         UserDefaults.standard.removeObject(forKey: "daily_scan_count")
         UserDefaults.standard.removeObject(forKey: "daily_chat_count")
         UserDefaults.standard.removeObject(forKey: "rate_limit_last_reset")
@@ -316,6 +361,168 @@ final class AppState {
         }
     }
 
+    // MARK: - Local Meal Persistence
+
+    private static let localMealsKey = "fuel_local_today_meals"
+    private static let localMealsDateKey = "fuel_local_meals_date"
+    private static let pendingMealsKey = "fuel_pending_meals"
+
+    /// Save today's meals to UserDefaults so they survive app termination.
+    /// Only persists if we're viewing today (not a past date).
+    private func persistMealsLocally() {
+        // Skip re-persisting when we're restoring from disk (avoids redundant encode/write)
+        guard !isLoadingLocalMeals else { return }
+        let today = Date().dateString
+        // Only persist if the currently selected date IS today — don't save past-date meals as "today"
+        guard selectedDate.dateString == today else { return }
+        guard let data = try? JSONEncoder().encode(todayMeals) else { return }
+        UserDefaults.standard.set(data, forKey: Self.localMealsKey)
+        UserDefaults.standard.set(today, forKey: Self.localMealsDateKey)
+    }
+
+    /// Load locally-persisted meals on launch (before DB fetch arrives)
+    func loadLocalMeals() {
+        let today = Date().dateString
+        guard let savedDate = UserDefaults.standard.string(forKey: Self.localMealsDateKey),
+              savedDate == today,
+              let data = UserDefaults.standard.data(forKey: Self.localMealsKey) else {
+            return
+        }
+
+        let meals: [Meal]
+        do {
+            meals = try JSONDecoder().decode([Meal].self, from: data)
+        } catch {
+            #if DEBUG
+            print("[Fuel] Failed to decode local meals: \(error)")
+            #endif
+            return
+        }
+
+        isLoadingLocalMeals = true
+        todayMeals = meals
+        isLoadingLocalMeals = false
+
+        // Restore unsynced IDs from pending queue so refreshTodayData can merge correctly
+        let pending = loadPendingMeals()
+        unsyncedMealIds = Set(pending.map(\.id))
+
+        // Rebuild summary from local meals so calorie rings are correct immediately
+        rebuildSummaryFromMeals()
+    }
+
+    /// Rebuild todaySummary from the current todayMeals array
+    func rebuildSummaryFromMeals() {
+        let userId = userProfile?.id
+            ?? todaySummary?.userId
+            ?? Constants.supabase.auth.currentSession?.user.id
+            ?? UUID()
+        let dateStr = selectedDate.dateString
+        var summary = todaySummary ?? DailySummary(userId: userId, date: dateStr)
+        var cal = 0; var p = 0.0; var c = 0.0; var f = 0.0
+        var fib = 0.0; var sug = 0.0; var sod = 0.0
+        for meal in todayMeals {
+            cal += meal.totalCalories
+            p += meal.totalProtein
+            c += meal.totalCarbs
+            f += meal.totalFat
+            fib += meal.totalFiber
+            sug += meal.totalSugar
+            sod += meal.totalSodium
+        }
+        summary.totalCalories = cal
+        summary.totalProtein = p
+        summary.totalCarbs = c
+        summary.totalFat = f
+        summary.totalFiber = fib
+        summary.totalSugar = sug
+        summary.totalSodium = sod
+        summary.waterMl = todayWaterMl
+        summary.isOnTarget = Double(cal) <= Double(calorieTarget) * 1.1
+        todaySummary = summary
+    }
+
+    // MARK: - Pending Meal Sync (retry queue for failed DB saves)
+
+    /// Mark a meal as needing sync to Supabase
+    func markMealPending(_ meal: Meal) {
+        unsyncedMealIds.insert(meal.id)
+        // Also persist pending meals to disk in case app is killed
+        var pending = loadPendingMeals()
+        if !pending.contains(where: { $0.id == meal.id }) {
+            pending.append(meal)
+            savePendingMeals(pending)
+        }
+    }
+
+    /// Mark a meal as successfully synced
+    func markMealSynced(_ mealId: UUID) {
+        unsyncedMealIds.remove(mealId)
+        var pending = loadPendingMeals()
+        pending.removeAll { $0.id == mealId }
+        savePendingMeals(pending)
+    }
+
+    private func loadPendingMeals() -> [Meal] {
+        guard let data = UserDefaults.standard.data(forKey: Self.pendingMealsKey),
+              let meals = try? JSONDecoder().decode([Meal].self, from: data) else {
+            return []
+        }
+        return meals
+    }
+
+    private func savePendingMeals(_ meals: [Meal]) {
+        if let data = try? JSONEncoder().encode(meals) {
+            UserDefaults.standard.set(data, forKey: Self.pendingMealsKey)
+        }
+    }
+
+    /// Retry syncing any meals that failed to save to Supabase
+    func syncPendingMeals() async {
+        let pending = loadPendingMeals()
+        guard !pending.isEmpty, let db = databaseService else { return }
+
+        #if DEBUG
+        print("[Fuel] Retrying \(pending.count) pending meal(s)...")
+        #endif
+
+        for meal in pending {
+            do {
+                try await db.logMeal(meal)
+                await MainActor.run { markMealSynced(meal.id) }
+                #if DEBUG
+                print("[Fuel] Synced pending meal: \(meal.displayName)")
+                #endif
+            } catch {
+                // If it's a duplicate key error (meal already saved), clear it from queue
+                let errStr = "\(error)"
+                if errStr.contains("duplicate") || errStr.contains("unique") || errStr.contains("23505") {
+                    await MainActor.run { markMealSynced(meal.id) }
+                    #if DEBUG
+                    print("[Fuel] Pending meal already in DB (duplicate): \(meal.displayName)")
+                    #endif
+                } else {
+                    #if DEBUG
+                    print("[Fuel] Retry failed for \(meal.displayName): \(error)")
+                    #endif
+                    // Leave in queue for next attempt
+                }
+            }
+        }
+
+        // Recalculate summary if any meals were synced
+        if loadPendingMeals().count < pending.count {
+            await recalculateDailySummary()
+        }
+    }
+
+    // MARK: - Clear local meals (for date change or sign out)
+
+    func clearLocalMeals() {
+        UserDefaults.standard.removeObject(forKey: Self.localMealsKey)
+        UserDefaults.standard.removeObject(forKey: Self.localMealsDateKey)
+    }
+
     // MARK: - Debug Screenshot Seeder
 
     #if DEBUG
@@ -335,7 +542,7 @@ final class AppState {
             userProfile = UserProfile(
                 id: userId, displayName: "Alex", isPremium: true,
                 streakCount: 12, longestStreak: 18, unitSystem: .imperial,
-                createdAt: calendar.date(byAdding: .day, value: -90, to: today)!, updatedAt: today
+                createdAt: calendar.date(byAdding: .day, value: -90, to: today) ?? today, updatedAt: today
             )
             userProfile?.age = 28
             userProfile?.sex = .male
@@ -367,7 +574,7 @@ final class AppState {
             totalFiber: 4, totalSugar: 18, totalSodium: 85,
             imageUrl: "https://images.unsplash.com/photo-1488477181946-6428a0291777?w=400&q=80",
             displayName: "Greek Yogurt Parfait", loggedDate: todayStr,
-            loggedAt: calendar.date(bySettingHour: 8, minute: 15, second: 0, of: today)!,
+            loggedAt: calendar.date(bySettingHour: 8, minute: 15, second: 0, of: today) ?? today,
             createdAt: today
         )
 
@@ -380,7 +587,7 @@ final class AppState {
             totalFiber: 6, totalSugar: 4, totalSodium: 680,
             imageUrl: "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80",
             displayName: "Grilled Chicken Bowl", loggedDate: todayStr,
-            loggedAt: calendar.date(bySettingHour: 12, minute: 30, second: 0, of: today)!,
+            loggedAt: calendar.date(bySettingHour: 12, minute: 30, second: 0, of: today) ?? today,
             createdAt: today
         )
 
@@ -393,7 +600,7 @@ final class AppState {
             totalFiber: 5, totalSugar: 20, totalSodium: 45,
             imageUrl: "https://images.unsplash.com/photo-1568702846914-96b305d2uj38?w=400&q=80",
             displayName: "Apple & Almond Butter", loggedDate: todayStr,
-            loggedAt: calendar.date(bySettingHour: 15, minute: 20, second: 0, of: today)!,
+            loggedAt: calendar.date(bySettingHour: 15, minute: 20, second: 0, of: today) ?? today,
             createdAt: today
         )
 

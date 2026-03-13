@@ -1,6 +1,6 @@
 import StoreKit
 
-@Observable
+@MainActor @Observable
 final class SubscriptionService {
     var isPremium = false
     var products: [Product] = []
