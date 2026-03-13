@@ -231,7 +231,7 @@ struct RecentMealsView: View {
     }
 
     private func selectFavorite(_ favorite: FavoriteMeal) {
-        let items = favorite.items.map { item in
+        var items = favorite.items.map { item in
             AnalyzedFoodItem(
                 id: UUID(),
                 name: item.name,
@@ -240,9 +240,25 @@ struct RecentMealsView: View {
                 carbs: item.carbs,
                 fat: item.fat,
                 servingSize: item.servingSize ?? "1 serving",
+                estimatedGrams: item.estimatedGrams,
+                measurementUnit: item.measurementUnit,
+                measurementAmount: item.measurementAmount,
                 confidence: item.confidence,
                 note: nil
             )
+        }
+
+        // Fallback: if items are empty, create one from totals
+        if items.isEmpty && favorite.totalCalories > 0 {
+            items = [AnalyzedFoodItem(
+                name: favorite.name,
+                calories: favorite.totalCalories,
+                protein: favorite.totalProtein,
+                carbs: favorite.totalCarbs,
+                fat: favorite.totalFat,
+                servingSize: "1 serving",
+                confidence: 1.0
+            )]
         }
 
         let analysis = FoodAnalysis(
@@ -272,21 +288,39 @@ struct RecentMealsView: View {
     }
 
     private func loadRecentMeals() async {
+        // Always include locally-logged meals (available immediately, no DB needed)
+        let localMeals = await MainActor.run { appState.todayMeals }
+
         guard let profile = appState.userProfile,
               let db = appState.databaseService else {
-            isLoading = false
+            // No DB — show local meals only
+            await MainActor.run {
+                meals = groupMeals(localMeals)
+                isLoading = false
+            }
             return
         }
 
         do {
-            let recentMeals = try await db.getRecentMeals(userId: profile.id)
+            let dbMeals = try await db.getRecentMeals(userId: profile.id)
+
+            // Merge: DB meals + local meals not yet in DB (dedup by ID)
+            let dbIDs = Set(dbMeals.map(\.id))
+            let unsyncedLocal = localMeals.filter { !dbIDs.contains($0.id) }
+            let allMeals = dbMeals + unsyncedLocal
+
             await MainActor.run {
-                meals = groupMeals(recentMeals)
+                meals = groupMeals(allMeals)
                 isLoading = false
             }
         } catch {
+            // DB failed — fall back to local meals
             await MainActor.run {
-                errorMessage = "Unable to load recent meals."
+                if localMeals.isEmpty {
+                    errorMessage = "Unable to load recent meals."
+                } else {
+                    meals = groupMeals(localMeals)
+                }
                 isLoading = false
             }
         }
@@ -325,7 +359,7 @@ struct RecentMealsView: View {
     }
 
     private func selectMeal(_ meal: GroupedMeal) {
-        let items = meal.items.map { item in
+        var items = meal.items.map { item in
             AnalyzedFoodItem(
                 id: UUID(),
                 name: item.name,
@@ -334,9 +368,25 @@ struct RecentMealsView: View {
                 carbs: item.carbs,
                 fat: item.fat,
                 servingSize: item.servingSize ?? "1 serving",
+                estimatedGrams: item.estimatedGrams,
+                measurementUnit: item.measurementUnit,
+                measurementAmount: item.measurementAmount,
                 confidence: 1.0,
                 note: nil
             )
+        }
+
+        // Fallback: if items are empty (e.g. meal_items not synced), create one from totals
+        if items.isEmpty && meal.totalCalories > 0 {
+            items = [AnalyzedFoodItem(
+                name: meal.displayName,
+                calories: meal.totalCalories,
+                protein: meal.totalProtein,
+                carbs: meal.totalCarbs,
+                fat: meal.totalFat,
+                servingSize: "1 serving",
+                confidence: 1.0
+            )]
         }
 
         let analysis = FoodAnalysis(

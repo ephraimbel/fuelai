@@ -4,10 +4,10 @@ struct FuelPrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(FuelType.cardTitle)
-            .foregroundStyle(FuelColors.onDark)
+            .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
             .padding(.vertical, FuelSpacing.lg)
-            .background(FuelColors.ink)
+            .background(FuelColors.buttonFill)
             .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
             .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
             .opacity(configuration.isPressed ? 0.9 : 1.0)

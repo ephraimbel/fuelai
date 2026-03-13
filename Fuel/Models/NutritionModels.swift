@@ -155,6 +155,7 @@ struct AnalyzedItem: Codable, Sendable {
     let protein: Double
     let carbs: Double
     let fat: Double
+    let estimatedGrams: Double
     let note: String?
 
     init(from decoder: Decoder) throws {
@@ -171,11 +172,14 @@ struct AnalyzedItem: Codable, Sendable {
         protein = (try? container.decode(Double.self, forKey: .protein)) ?? 0
         carbs = (try? container.decode(Double.self, forKey: .carbs)) ?? 0
         fat = (try? container.decode(Double.self, forKey: .fat)) ?? 0
+        estimatedGrams = (try? container.decode(Double.self, forKey: .estimatedGrams)) ?? 0
         note = try? container.decode(String.self, forKey: .note)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case item, quantity, calories, protein, carbs, fat, note
+        case item, quantity, calories, protein, carbs, fat
+        case estimatedGrams = "estimated_grams"
+        case note
     }
 }
 

@@ -14,13 +14,15 @@
     <string>$(MARKETING_VERSION)</string>
     <key>CFBundleVersion</key>
     <string>$(CURRENT_PROJECT_VERSION)</string>
-    <key>UIUserInterfaceStyle</key>
-    <string>Light</string>
-    <key>UILaunchScreen</key>
+<key>UILaunchScreen</key>
     <dict>
         <key>UIColorName</key>
         <string>LaunchBackground</string>
     </dict>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+    </array>
     <key>NSCameraUsageDescription</key>
     <string>Fuel uses your camera to scan food and instantly analyze calories and nutrition.</string>
     <key>NSPhotoLibraryUsageDescription</key>
@@ -29,5 +31,9 @@
     <string>Fuel reads your weight from Health to keep your calorie targets accurate.</string>
     <key>NSHealthUpdateUsageDescription</key>
     <string>Fuel saves your nutrition data to Health so you can see it alongside your other health metrics.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Fuel uses speech recognition to let you dictate messages to your AI nutrition coach.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Fuel needs microphone access so you can speak your messages instead of typing.</string>
 </dict>
 </plist>

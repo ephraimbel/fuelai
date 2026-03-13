@@ -6,6 +6,15 @@ struct MealCardView: View {
     @State private var offset: CGFloat = 0
     @State private var showingDelete = false
 
+    /// Check for locally cached image first (available instantly after logging)
+    private var localImage: UIImage? {
+        let path = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("meal-images")
+            .appendingPathComponent("\(meal.id.uuidString).jpg")
+        guard let data = try? Data(contentsOf: path) else { return nil }
+        return UIImage(data: data)
+    }
+
     var body: some View {
         ZStack(alignment: .trailing) {
             // Delete background
@@ -25,8 +34,14 @@ struct MealCardView: View {
 
             // Card content
             HStack(spacing: FuelSpacing.md) {
-                // Photo thumbnail
-                if let imageUrl = meal.imageUrl, let url = URL(string: imageUrl) {
+                // Photo thumbnail — local cache first, then remote URL, then placeholder
+                if let local = localImage {
+                    Image(uiImage: local)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 60, height: 60)
+                        .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
+                } else if let imageUrl = meal.imageUrl, let url = URL(string: imageUrl) {
                     AsyncImage(url: url) { image in
                         image.resizable().aspectRatio(contentMode: .fill)
                     } placeholder: {
@@ -54,7 +69,7 @@ struct MealCardView: View {
 
                     HStack(spacing: FuelSpacing.xs) {
                         Text("\(meal.totalCalories) cal")
-                            .font(FuelType.label)
+                            .font(FuelType.labelNum)
                             .foregroundStyle(FuelColors.ink)
                             .contentTransition(.numericText())
                     }
@@ -75,14 +90,7 @@ struct MealCardView: View {
                     .foregroundStyle(FuelColors.fog)
             }
             .padding(FuelSpacing.md)
-            .background(
-                RoundedRectangle(cornerRadius: FuelRadius.card)
-                    .fill(FuelColors.cloud)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: FuelRadius.card)
-                            .stroke(FuelColors.mist, lineWidth: 0.5)
-                    )
-            )
+            .fuelCard()
             .offset(x: offset)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(meal.displayName), \(meal.totalCalories) calories. Protein \(Int(meal.totalProtein))g, Carbs \(Int(meal.totalCarbs))g, Fat \(Int(meal.totalFat))g")
@@ -120,7 +128,7 @@ private struct MacroDot: View {
                 .fill(color)
                 .frame(width: 6, height: 6)
             Text(value)
-                .font(FuelType.micro)
+                .font(FuelType.microNum)
                 .foregroundStyle(FuelColors.stone)
         }
     }

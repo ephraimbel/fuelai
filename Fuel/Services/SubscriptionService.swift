@@ -13,6 +13,9 @@ final class SubscriptionService {
     ]
 
     init() {
+        #if DEBUG
+        isPremium = true
+        #endif
         Task { await observeTransactions() }
     }
 
@@ -58,7 +61,11 @@ final class SubscriptionService {
         let finalPurchased = purchased
         await MainActor.run {
             purchasedProductIDs = finalPurchased
+            #if DEBUG
+            isPremium = true
+            #else
             isPremium = !finalPurchased.isEmpty
+            #endif
         }
     }
 

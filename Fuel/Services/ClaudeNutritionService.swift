@@ -100,22 +100,12 @@ final class ClaudeNutritionService: @unchecked Sendable {
         print("[Fuel] analyze(image): \(imageData.count) bytes → \(base64.count) base64 chars")
         #endif
 
-        // Build RAG context: use description if provided, otherwise include
-        // common food anchors so Claude has calibration reference data.
-        let context: String
-        if let desc = additionalDescription, !desc.isEmpty {
-            context = rag.contextForQuery(desc)
-        } else {
-            context = commonFoodAnchors()
-        }
-
-        let system = buildVisionSystemPrompt(ragContext: context)
+        // Lean prompt — no RAG context for photos. Claude can see the food directly.
+        let system = buildLeanVisionPrompt()
         let userContent = buildVisionUserMessage(base64: base64, mimeType: "image/jpeg", additionalDescription: additionalDescription)
 
-        // PHOTO: Single attempt, 20s timeout. No retry — vision calls are expensive
-        // and retrying with the same image rarely helps. Fail fast, let user retry.
         #if DEBUG
-        print("[Fuel] analyze(image): single-pass Sonnet call (model: \(model), timeout: 20s)...")
+        print("[Fuel] analyze(image): direct call (model: \(model), timeout: 20s)...")
         #endif
         let result = try await callClaude(system: system, userContent: userContent, timeout: 20)
         #if DEBUG
@@ -193,6 +183,80 @@ final class ClaudeNutritionService: @unchecked Sendable {
         case 17..<21: return "MEAL CONTEXT: It is evening (dinner time). Default to dinner portions which are typically the largest meal. A 'plate' means a full dinner plate."
         default: return "MEAL CONTEXT: It is late night. Portions may be snack-sized or late-night fast food."
         }
+    }
+
+    // MARK: - Lean Vision Prompt (for direct photo analysis without RAG)
+
+    private func buildLeanVisionPrompt() -> String {
+        var prompt = """
+        You are a USDA-certified clinical nutritionist with expert visual food assessment skills. Analyze this food photo with precision.
+
+        CRITICAL — COUNTING PROTOCOL:
+        1. Count EVERY discrete item individually. If you see 3 bananas, report "3 bananas" not "2 bananas". If 5 chicken nuggets, say "5 chicken nuggets".
+        2. Look carefully at overlapping items — items partially hidden behind others still count. Scan left-to-right, top-to-bottom.
+        3. For items in groups/clusters (e.g. grapes, fries, berries), estimate the total count or weight, don't undercount.
+        4. If items are identical (e.g. 3 tacos), count each one — do NOT default to 1 or 2.
+        5. When uncertain between N and N+1 items, choose N+1 (overcounting is better than undercounting for accuracy).
+
+        WEIGHT ESTIMATION PROTOCOL (estimate grams FIRST, then derive calories):
+        Visual size references:
+        - Standard dinner plate = 10-11" (25-28cm). Use plate size to gauge portions.
+        - Palm of hand ≈ 3-4oz (85-113g) cooked meat. Deck of cards ≈ 3oz.
+        - Fist ≈ 1 cup (240ml) — ~200g cooked rice/pasta, ~150g vegetables.
+        - Thumb tip ≈ 1 tsp (5ml), whole thumb ≈ 1 tbsp (15ml).
+        - Tennis ball ≈ ½ cup. Baseball ≈ 1 cup.
+        - Medium banana ≈ 118g (105 cal). Large banana ≈ 136g (121 cal).
+        - Meat thickness: thin cutlet 3-4oz, thick steak 6-8oz+. Look at height/thickness.
+        Ground meat estimation:
+        - Thin spread across plate (¼" thick) ≈ 3-4oz (85-113g)
+        - Moderate mound (½" thick) ≈ 6-8oz (170-227g / quarter to half pound)
+        - Large portion filling plate ≈ 8-12oz (half to ¾ pound)
+        Mixed dishes (e.g. ground beef with greens/rice):
+        - Estimate EACH component separately by visible volume ratio.
+        - If meat is 40% of the visible mix and total mix looks like 2 cups, meat ≈ 0.8 cups ≈ 6oz.
+
+        COOKING METHOD ADJUSTMENTS:
+        - Grill marks → grilled (base calories)
+        - Golden/crispy → fried or breaded (+30-50% cal, +5-15g fat per item)
+        - Glistening/shiny → oiled or buttered (+40-120 cal per visible tbsp of oil)
+        - Creamy/white sauce → cream-based (150-200 cal per ¼ cup)
+
+        HIDDEN CALORIE CHECKLIST (NEVER skip):
+        Oils: 120cal/tbsp | Butter: 100cal/tbsp | Mayo: 100cal/tbsp
+        Ranch/creamy: 130cal/2tbsp | Cheese slice: 70cal | Guac: 50cal/2tbsp
+        Bun/roll: 120-150cal | Tortilla 10": 220cal | Bread: 80cal/slice
+
+        ACCURACY RULES:
+        1. Identify EVERY food/drink visible. Separate items on the same plate.
+        2. Slight overestimate (5-10%) preferred over underestimate.
+        3. Restaurant portions = 1.5-2× home portions.
+        4. Validate: P×4 + C×4 + F×9 ≈ total_calories (±10%).
+        5. Non-food → meal_name: "Not a food item", total_calories: 0, confidence: "low".
+
+        \(mealTimeContext())
+
+        \(commonFoodAnchors())
+
+        INGREDIENT ITEMIZATION — CRITICAL:
+        - List EVERY visible ingredient as a SEPARATE item.
+        - A "Chicken Salad Bowl" must list: grilled chicken breast, romaine lettuce, cherry tomatoes, red onion, cucumber, dressing, etc.
+        - Sauces, dressings, oils, and condiments are ALWAYS separate items.
+
+        Respond with ONLY valid JSON (no markdown, no backticks):
+        {"meal_name":"string","total_calories":int,"protein_g":num,"carbs_g":num,"fat_g":num,"fiber_g":num,"sugar_g":num,"sodium_mg":num,"serving_assumed":"string","confidence":"high|medium|low","confidence_reason":"string","items":[{"item":"string","quantity":"string","calories":int,"protein":num,"carbs":num,"fat":num,"estimated_grams":num,"note":"string"}],"warnings":["string"],"health_insight":"string","calorie_range":{"low":int,"high":int}}
+        """
+
+        if let ctx = userContext {
+            let goal: String = switch ctx.goalType {
+            case "lose": "losing weight"
+            case "gain": "gaining"
+            case "bulk": "bulking"
+            default: "maintaining"
+            }
+            prompt += "\n\nUSER: \(ctx.caloriesRemaining) cal remaining. Goal: \(goal). Tailor health_insight."
+        }
+
+        return prompt
     }
 
     // MARK: - Vision System Prompt (enterprise-grade food identification)
@@ -370,7 +434,7 @@ final class ClaudeNutritionService: @unchecked Sendable {
             )
         ]
 
-        var text = "Analyze the nutritional content of the food shown in this image. Identify every item visible and estimate portions carefully."
+        var text = "Analyze the nutritional content of the food shown in this image. Count every discrete item carefully (look for overlapping/partially hidden items). Estimate weight in grams for each item using plate/container as a size reference, then derive calories."
         if let desc = additionalDescription, !desc.isEmpty {
             text += " The user describes this as: \(desc)"
         }

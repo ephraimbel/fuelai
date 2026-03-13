@@ -14,15 +14,20 @@ struct MealFrequencyView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: FuelSpacing.sm) {
-                Text("How many meals a day?")
+            VStack(spacing: FuelSpacing.sm) {
+                (Text("How many ")
+                    .foregroundColor(FuelColors.ink) +
+                 Text("meals ")
+                    .foregroundColor(FuelColors.flame) +
+                 Text("a day?")
+                    .foregroundColor(FuelColors.ink))
                     .font(FuelType.title)
-                    .foregroundStyle(FuelColors.ink)
                 Text("We'll split your calories across meals")
                     .font(FuelType.body)
                     .foregroundStyle(FuelColors.stone)
+                    .multilineTextAlignment(.center)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, FuelSpacing.xl)
             .padding(.top, FuelSpacing.lg)
             .staggeredAppear(index: 0)

@@ -4,12 +4,22 @@ struct GoalValidationView: View {
     let goalType: GoalType
     let currentWeightKg: Double
     let targetWeightKg: Double
+    var unitSystem: UnitSystem = .imperial
     let onContinue: () -> Void
 
     @State private var appeared = false
+    @State private var timerTask: Task<Void, Never>?
 
-    private var weightDiffLbs: Int {
-        Int(abs(currentWeightKg - targetWeightKg) * 2.20462)
+    private var isMetric: Bool { unitSystem == .metric }
+
+    private var weightDiffDisplay: String {
+        if isMetric {
+            let diff = abs(currentWeightKg - targetWeightKg)
+            return "\(String(format: "%.1f", diff)) kg"
+        } else {
+            let diff = Int(abs(currentWeightKg - targetWeightKg) * 2.20462)
+            return "\(diff) lbs"
+        }
     }
 
     private var weeklyChange: Double {
@@ -27,9 +37,11 @@ struct GoalValidationView: View {
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: FuelSpacing.sm) {
-                Text("Your goal is achievable")
+                (Text("Your goal is ")
+                    .foregroundColor(FuelColors.ink) +
+                 Text("achievable")
+                    .foregroundColor(FuelColors.flame))
                     .font(FuelType.title)
-                    .foregroundStyle(FuelColors.ink)
                 Text(subtitle)
                     .font(FuelType.body)
                     .foregroundStyle(FuelColors.stone)
@@ -107,9 +119,13 @@ struct GoalValidationView: View {
         }
         .onAppear {
             appeared = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            timerTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 400_000_000)
                 FuelSounds.shared.chime()
             }
+        }
+        .onDisappear {
+            timerTask?.cancel()
         }
     }
 
@@ -130,7 +146,7 @@ struct GoalValidationView: View {
 
     private var weightSummary: String {
         let verb = currentWeightKg > targetWeightKg ? "Lose" : "Gain"
-        return "\(verb) \(weightDiffLbs) lbs at a healthy pace"
+        return "\(verb) \(weightDiffDisplay) at a healthy pace"
     }
 
     private var timelineSummary: String {

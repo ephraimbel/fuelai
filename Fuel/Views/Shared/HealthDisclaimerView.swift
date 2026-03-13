@@ -12,14 +12,14 @@ struct HealthDisclaimerView: View {
                 disclaimerSection(
                     icon: "sparkles",
                     title: "Fuel AI Estimates",
-                    body: "Fuel uses proprietary AI technology to analyze food photos and descriptions. Nutritional estimates are intelligent approximations and may not be exact. Always verify with packaging labels when available."
+                    body: "Fuel uses advanced AI technology to analyze food photos and descriptions, providing detailed nutritional breakdowns calibrated against USDA data. For packaged foods, you can also reference the label."
                 )
 
                 // Not Medical Advice
                 disclaimerSection(
                     icon: "heart.text.square",
                     title: "Not Medical Advice",
-                    body: "This app is not a medical device and does not provide medical advice, diagnosis, or treatment. Calorie and macronutrient estimates are approximations and may vary from actual values."
+                    body: "Fuel is a nutrition tracking tool, not a medical device. It does not provide medical advice, diagnosis, or treatment. For medical dietary needs, work with a healthcare professional."
                 )
 
                 // Consult Professional
@@ -45,7 +45,7 @@ struct HealthDisclaimerView: View {
             }
             .padding(FuelSpacing.xl)
         }
-        .background(FuelColors.white)
+        .background(FuelColors.pageBackground)
         .navigationTitle("Health & AI Info")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

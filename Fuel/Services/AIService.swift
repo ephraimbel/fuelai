@@ -20,45 +20,27 @@ actor AIService {
         Task { await NutritionLogger.shared.configure(supabase: supabase) }
     }
 
-    /// Fetch the Anthropic API key from Supabase and activate the RAG pipeline.
-    /// Call once at app launch AFTER authentication (get-api-key requires auth).
-    func activateRAG() async {
-        do {
-            #if DEBUG
-            print("[Fuel] activateRAG: calling get-api-key edge function...")
-            #endif
-            struct KeyResponse: Decodable {
-                let key: String?
-                let error: String?
-            }
-            let response: KeyResponse = try await supabase.functions.invoke(
-                "get-api-key",
-                options: .init(body: [:] as [String: String])
-            )
-            #if DEBUG
-            if let error = response.error {
-                print("[Fuel] activateRAG: server returned error: \(error)")
-            }
-            #endif
-            if let key = response.key, !key.isEmpty {
-                ClaudeNutritionService.shared.apiKey = key
-                useRAG = true
-                #if DEBUG
-                print("[Fuel] RAG activated (key length: \(key.count))")
-                #endif
-            } else {
-                #if DEBUG
-                print("[Fuel] activateRAG: key was nil or empty — will use Supabase fallback")
-                #endif
-            }
-        } catch {
-            #if DEBUG
-            print("[Fuel] activateRAG FAILED: \(error)")
-            if let urlError = error as? URLError {
-                print("[Fuel] activateRAG URLError code: \(urlError.code.rawValue)")
-            }
-            #endif
+    /// Get auth headers for edge function calls. Uses fresh session or falls back to cached.
+    private func authHeaders() async throws -> [String: String] {
+        if let session = try? await supabase.auth.session {
+            return ["Authorization": "Bearer \(session.accessToken)"]
         }
+        if let cached = supabase.auth.currentSession {
+            return ["Authorization": "Bearer \(cached.accessToken)"]
+        }
+        throw FuelError.authFailed("No active session")
+    }
+
+    /// Activate the RAG pipeline (local database + edge function routing).
+    /// No API key is stored on device — all AI calls go through Supabase edge functions.
+    func activateRAG() async {
+        // Clear any legacy key from Keychain (from old get-api-key flow)
+        ClaudeNutritionService.shared.apiKey = ""
+
+        useRAG = true
+        #if DEBUG
+        print("[Fuel] RAG activated (server-side key — no key on device)")
+        #endif
 
         // Background tasks — don't block the caller
         let client = supabase
@@ -135,27 +117,12 @@ actor AIService {
 
     func analyzePhoto(imageData: Data, description: String? = nil, onItemsIdentified: IdentifiedItemsCallback? = nil) async throws -> FoodAnalysis {
         let start = CFAbsoluteTimeGetCurrent()
-        let result: FoodAnalysis
 
         try Task.checkCancellation()
 
-        let hasApiKey = !ClaudeNutritionService.shared.apiKey.isEmpty
         #if DEBUG
-        print("[Fuel] analyzePhoto: start (useRAG=\(useRAG), imageSize=\(imageData.count), apiKey=\(hasApiKey ? "set" : "EMPTY"))")
+        print("[Fuel] analyzePhoto: start (imageSize=\(imageData.count) bytes)")
         #endif
-
-        // If no API key yet, try activating RAG one more time (session might have been restored late)
-        if !hasApiKey && !useRAG {
-            #if DEBUG
-            print("[Fuel] analyzePhoto: no API key — retrying activateRAG()...")
-            #endif
-            await activateRAG()
-            #if DEBUG
-            print("[Fuel] analyzePhoto: after retry, apiKey=\(ClaudeNutritionService.shared.apiKey.isEmpty ? "STILL EMPTY" : "set")")
-            #endif
-        }
-
-        try Task.checkCancellation()
 
         // Check image hash cache first
         let imageHash = imageData.fuelHash
@@ -166,82 +133,23 @@ actor AIService {
             return cached
         }
 
-        // Single attempt: Direct API → Supabase fallback. No retries for photos.
-        // Photos are expensive vision calls — fail fast and let user retry.
-        let hasKey = !ClaudeNutritionService.shared.apiKey.isEmpty
+        try Task.checkCancellation()
 
-        if hasKey {
-            // Path 1: Direct Claude API with RAG (fastest, ~5-15s)
-            do {
-                #if DEBUG
-                print("[Fuel] analyzePhoto: direct API path...")
-                #endif
-                result = try await analyzePhotoWithRAG(imageData: imageData, description: description, onItemsIdentified: onItemsIdentified)
-                #if DEBUG
-                print("[Fuel] analyzePhoto: direct API succeeded — \(result.displayName) (\(result.totalCalories) cal)")
-                #endif
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                try Task.checkCancellation()
-                // Direct API failed — immediately try Supabase (no further retries)
-                #if DEBUG
-                print("[Fuel] analyzePhoto: direct API failed (\(error)), trying Supabase fallback...")
-                #endif
-                do {
-                    result = try await analyzePhotoWithSupabase(imageData: imageData)
-                    #if DEBUG
-                    print("[Fuel] analyzePhoto: Supabase fallback succeeded — \(result.displayName) (\(result.totalCalories) cal)")
-                    #endif
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch let fallbackError {
-                    // Both paths failed — try offline if description available
-                    if let desc = description, let offline = offlineEstimate(query: desc) {
-                        #if DEBUG
-                        print("[Fuel] analyzePhoto: ALL paths failed. Offline estimate for: \(desc)")
-                        #endif
-                        result = offline
-                    } else {
-                        #if DEBUG
-                        print("[Fuel] analyzePhoto: ALL paths FAILED. Direct: \(error), Supabase: \(fallbackError)")
-                        #endif
-                        throw error // Throw the original (more informative) error
-                    }
-                }
-            }
-        } else {
-            // No client API key — use Supabase (has server-side key)
-            do {
-                #if DEBUG
-                print("[Fuel] analyzePhoto: Supabase path (no client API key)...")
-                #endif
-                result = try await analyzePhotoWithSupabase(imageData: imageData)
-                #if DEBUG
-                print("[Fuel] analyzePhoto: Supabase succeeded — \(result.displayName) (\(result.totalCalories) cal)")
-                #endif
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                if let desc = description, let offline = offlineEstimate(query: desc) {
-                    #if DEBUG
-                    print("[Fuel] analyzePhoto: Supabase failed. Offline estimate for: \(desc)")
-                    #endif
-                    result = offline
-                } else {
-                    #if DEBUG
-                    print("[Fuel] analyzePhoto: Supabase FAILED. Error: \(error)")
-                    #endif
-                    throw error
-                }
-            }
-        }
+        // Single path: Supabase edge function. The API key lives server-side.
+        // No client-side key fetch, no branching, no fallback chains.
+        #if DEBUG
+        print("[Fuel] analyzePhoto: calling Supabase edge function...")
+        #endif
+        let result = try await analyzePhotoWithSupabase(imageData: imageData)
+        #if DEBUG
+        print("[Fuel] analyzePhoto: success — \(result.displayName) (\(result.totalCalories) cal)")
+        #endif
 
         PhotoScanCache.shared.set(result, hash: imageHash)
 
         let elapsedMs = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
         #if DEBUG
-        print("[Fuel] analyzePhoto: completed in \(elapsedMs)ms — \(result.displayName) (\(result.totalCalories) cal)")
+        print("[Fuel] analyzePhoto: completed in \(elapsedMs)ms")
         #endif
         await NutritionLogger.shared.log(
             queryType: .photo,
@@ -397,7 +305,11 @@ actor AIService {
                     id: item.id, name: item.name,
                     calories: item.calories, protein: item.protein,
                     carbs: item.carbs, fat: item.fat,
+                    fiber: item.fiber, sugar: item.sugar,
                     servingSize: item.servingSize,
+                    estimatedGrams: item.estimatedGrams,
+                    measurementUnit: item.measurementUnit,
+                    measurementAmount: item.measurementAmount,
                     confidence: min(item.confidence, 0.7),
                     note: item.note
                 ))
@@ -480,7 +392,11 @@ actor AIService {
                 id: item.id, name: item.name,
                 calories: correctedCal, protein: correctedP,
                 carbs: correctedC, fat: correctedF,
+                fiber: item.fiber, sugar: item.sugar,
                 servingSize: item.servingSize,
+                estimatedGrams: item.estimatedGrams,
+                measurementUnit: item.measurementUnit,
+                measurementAmount: item.measurementAmount,
                 confidence: itemConfidence,
                 note: updatedNote
             ))
@@ -528,6 +444,8 @@ actor AIService {
             fiberG: ragFiber,
             sugarG: ragSugar,
             sodiumMg: ragSodium,
+            cholesterolMg: analysis.cholesterolMg,
+            saturatedFatG: analysis.saturatedFatG,
             warnings: allWarnings,
             healthInsight: analysis.healthInsight,
             calorieRange: analysis.calorieRange,
@@ -585,7 +503,11 @@ actor AIService {
                 id: item.id, name: item.name,
                 calories: item.calories, protein: item.protein,
                 carbs: item.carbs, fat: item.fat,
+                fiber: item.fiber, sugar: item.sugar,
                 servingSize: item.servingSize,
+                estimatedGrams: item.estimatedGrams,
+                measurementUnit: item.measurementUnit,
+                measurementAmount: item.measurementAmount,
                 confidence: adjusted,
                 note: item.note
             )
@@ -672,7 +594,11 @@ actor AIService {
                     id: item.id, name: item.name,
                     calories: item.calories, protein: item.protein,
                     carbs: item.carbs, fat: item.fat,
+                    fiber: item.fiber, sugar: item.sugar,
                     servingSize: item.servingSize,
+                    estimatedGrams: item.estimatedGrams,
+                    measurementUnit: item.measurementUnit,
+                    measurementAmount: item.measurementAmount,
                     confidence: min(item.confidence, 0.5),
                     note: (item.note.map { $0 + ". " } ?? "") + "Unusually high — please verify"
                 )
@@ -685,35 +611,30 @@ actor AIService {
                     id: item.id, name: item.name,
                     calories: item.calories, protein: item.protein,
                     carbs: item.carbs, fat: item.fat,
+                    fiber: item.fiber, sugar: item.sugar,
                     servingSize: item.servingSize,
+                    estimatedGrams: item.estimatedGrams,
+                    measurementUnit: item.measurementUnit,
+                    measurementAmount: item.measurementAmount,
                     confidence: min(item.confidence, 0.4),
                     note: (item.note.map { $0 + ". " } ?? "") + "Unusually low — please verify"
                 )
             }
-            // Protein impossible check: protein > total calories / 4 is physically impossible
-            if item.protein > 0 && item.protein * 4 > Double(item.calories) * 1.1 {
+            // Macro impossible check: if macros exceed calories, scale ALL macros proportionally
+            let macroCalories = item.protein * 4 + item.carbs * 4 + item.fat * 9
+            if item.calories > 0 && macroCalories > Double(item.calories) * 1.15 {
                 needsUpdate = true
-                let cappedProtein = round(Double(item.calories) / 4.0 * 10) / 10
+                let scaleFactor = Double(item.calories) / macroCalories
                 return AnalyzedFoodItem(
                     id: item.id, name: item.name,
                     calories: item.calories,
-                    protein: cappedProtein,
-                    carbs: item.carbs, fat: item.fat,
+                    protein: round(item.protein * scaleFactor * 10) / 10,
+                    carbs: round(item.carbs * scaleFactor * 10) / 10,
+                    fat: round(item.fat * scaleFactor * 10) / 10,
                     servingSize: item.servingSize,
-                    confidence: item.confidence,
-                    note: item.note
-                )
-            }
-            // Fat impossible check: fat > total calories / 9 is physically impossible
-            if item.fat > 0 && item.fat * 9 > Double(item.calories) * 1.1 {
-                needsUpdate = true
-                let cappedFat = round(Double(item.calories) / 9.0 * 10) / 10
-                return AnalyzedFoodItem(
-                    id: item.id, name: item.name,
-                    calories: item.calories,
-                    protein: item.protein,
-                    carbs: item.carbs, fat: cappedFat,
-                    servingSize: item.servingSize,
+                    estimatedGrams: item.estimatedGrams,
+                    measurementUnit: item.measurementUnit,
+                    measurementAmount: item.measurementAmount,
                     confidence: item.confidence,
                     note: item.note
                 )
@@ -726,7 +647,11 @@ actor AIService {
                     calories: max(item.calories, 0),
                     protein: max(item.protein, 0),
                     carbs: max(item.carbs, 0), fat: max(item.fat, 0),
+                    fiber: max(item.fiber, 0), sugar: max(item.sugar, 0),
                     servingSize: item.servingSize,
+                    estimatedGrams: item.estimatedGrams,
+                    measurementUnit: item.measurementUnit,
+                    measurementAmount: item.measurementAmount,
                     confidence: min(item.confidence, 0.5),
                     note: (item.note.map { $0 + ". " } ?? "") + "Negative values corrected"
                 )
@@ -740,7 +665,11 @@ actor AIService {
                     calories: computedCal,
                     protein: item.protein,
                     carbs: item.carbs, fat: item.fat,
+                    fiber: item.fiber, sugar: item.sugar,
                     servingSize: item.servingSize,
+                    estimatedGrams: item.estimatedGrams,
+                    measurementUnit: item.measurementUnit,
+                    measurementAmount: item.measurementAmount,
                     confidence: min(item.confidence, 0.6),
                     note: (item.note.map { $0 + ". " } ?? "") + "Calories computed from macros"
                 )
@@ -793,7 +722,12 @@ actor AIService {
                 protein: round(item.protein * scaleFactor * 10) / 10,
                 carbs: round(item.carbs * scaleFactor * 10) / 10,
                 fat: round(item.fat * scaleFactor * 10) / 10,
+                fiber: round(item.fiber * scaleFactor * 10) / 10,
+                sugar: round(item.sugar * scaleFactor * 10) / 10,
                 servingSize: item.servingSize,
+                estimatedGrams: round(item.estimatedGrams * scaleFactor * 10) / 10,
+                measurementUnit: item.measurementUnit,
+                measurementAmount: round(item.measurementAmount * scaleFactor * 10) / 10,
                 confidence: item.confidence,
                 note: item.note
             )
@@ -829,7 +763,12 @@ actor AIService {
                 protein: round(item.protein * factor * 10) / 10,
                 carbs: round(item.carbs * factor * 10) / 10,
                 fat: round(item.fat * factor * 10) / 10,
+                fiber: round(item.fiber * factor * 10) / 10,
+                sugar: round(item.sugar * factor * 10) / 10,
                 servingSize: item.servingSize,
+                estimatedGrams: round(item.estimatedGrams * factor * 10) / 10,
+                measurementUnit: item.measurementUnit,
+                measurementAmount: round(item.measurementAmount * factor * 10) / 10,
                 confidence: item.confidence,
                 note: (item.note.map { $0 + ". " } ?? "") + "Adjusted based on your history"
             )
@@ -857,8 +796,11 @@ actor AIService {
         var correctedCal = analysis.totalCalories
         var warnings = analysis.warnings ?? []
 
-        // Step 1: Macro math check — P×4 + C×4 + F×9 ≈ total
-        let computedCal = Int(analysis.totalProtein * 4 + analysis.totalCarbs * 4 + analysis.totalFat * 9)
+        // Step 1: Macro math check — P×4 + (C-Fiber)×4 + F×9 ≈ total
+        // Fiber is 0-2 cal/g vs 4 cal/g for digestible carbs, so subtract it
+        let fiberG = analysis.fiberG ?? 0
+        let digestibleCarbs = max(analysis.totalCarbs - fiberG, 0)
+        let computedCal = Int(analysis.totalProtein * 4 + digestibleCarbs * 4 + fiberG * 2 + analysis.totalFat * 9)
         if computedCal > 0 {
             let deviation = abs(Double(correctedCal - computedCal)) / Double(computedCal)
             if deviation > 0.15 {
@@ -889,7 +831,12 @@ actor AIService {
                 protein: round(item.protein * scaleFactor * 10) / 10,
                 carbs: round(item.carbs * scaleFactor * 10) / 10,
                 fat: round(item.fat * scaleFactor * 10) / 10,
+                fiber: round(item.fiber * scaleFactor * 10) / 10,
+                sugar: round(item.sugar * scaleFactor * 10) / 10,
                 servingSize: item.servingSize,
+                estimatedGrams: round(item.estimatedGrams * scaleFactor * 10) / 10,
+                measurementUnit: item.measurementUnit,
+                measurementAmount: round(item.measurementAmount * scaleFactor * 10) / 10,
                 confidence: item.confidence,
                 note: item.note
             )
@@ -917,12 +864,36 @@ actor AIService {
     }
 
     /// Merge duplicate items (same name, case-insensitive) by summing their values.
+    /// Normalize item name for deduplication: strip leading quantities, singularize common plurals
+    private func deduplicationKey(_ name: String) -> String {
+        var key = name.lowercased().trimmingCharacters(in: .whitespaces)
+        // Strip leading quantity (e.g. "2 eggs" → "eggs", "3x chicken strips" → "chicken strips")
+        let quantityPattern = /^\d+\.?\d*\s*(x\s+)?/
+        key = key.replacing(quantityPattern, with: "")
+        // Simple plural → singular for common food suffixes
+        let pluralMappings = [
+            "eggs": "egg", "slices": "slice", "pieces": "piece", "strips": "strip",
+            "wings": "wing", "thighs": "thigh", "breasts": "breast", "patties": "patty",
+            "tortillas": "tortilla", "buns": "bun", "rolls": "roll", "cookies": "cookie",
+            "nuggets": "nugget", "fries": "fry", "tacos": "taco", "tomatoes": "tomato",
+            "potatoes": "potato", "onions": "onion", "pickles": "pickle", "berries": "berry",
+            "bananas": "banana", "apples": "apple", "oranges": "orange",
+        ]
+        for (plural, singular) in pluralMappings {
+            if key.hasSuffix(plural) {
+                key = String(key.dropLast(plural.count)) + singular
+                break
+            }
+        }
+        return key.trimmingCharacters(in: .whitespaces)
+    }
+
     private func deduplicateItems(_ analysis: FoodAnalysis) -> FoodAnalysis {
-        var seen: [String: Int] = [:] // lowercased name -> index in merged array
+        var seen: [String: Int] = [:] // normalized name -> index in merged array
         var merged = [AnalyzedFoodItem]()
 
         for item in analysis.items {
-            let key = item.name.lowercased().trimmingCharacters(in: .whitespaces)
+            let key = deduplicationKey(item.name)
             if let idx = seen[key] {
                 let existing = merged[idx]
                 // Merge notes from both items
@@ -1015,6 +986,7 @@ actor AIService {
         let p = round(food.protein * scale * 10) / 10
         let c = round(food.carbs * scale * 10) / 10
         let f = round(food.fat * scale * 10) / 10
+        let measurement = Self.inferMeasurement(from: food)
         let item = AnalyzedFoodItem(
             id: UUID(),
             name: food.name,
@@ -1022,7 +994,12 @@ actor AIService {
             protein: p,
             carbs: c,
             fat: f,
+            fiber: food.fiber * scale,
+            sugar: food.sugar * scale,
             servingSize: scale != 1.0 ? "\(String(format: "%.1f", scale))x \(food.serving)" : food.serving,
+            estimatedGrams: food.servingGrams * scale,
+            measurementUnit: measurement.unit,
+            measurementAmount: round(measurement.amount * scale * 10) / 10,
             confidence: confidence,
             note: nil
         )
@@ -1039,9 +1016,87 @@ actor AIService {
             warnings: nil,
             healthInsight: nil,
             calorieRange: nil,
-            confidenceReason: "Quick estimate from local database",
+            confidenceReason: nil,
             servingAssumed: item.servingSize
         )
+    }
+
+    // MARK: - Measurement Inference
+
+    /// Infer the most natural measurement unit and amount from a FoodItem's serving and category.
+    nonisolated static func inferMeasurement(from food: FoodItem) -> (unit: String, amount: Double) {
+        let serving = food.serving.lowercased()
+        let grams = food.servingGrams
+
+        // Parse explicit units in serving string
+        let patterns: [(regex: String, unit: String)] = [
+            (#"([\d.]+)\s*oz"#, "oz"),
+            (#"([\d.]+)\s*cup"#, "cup"),
+            (#"([\d.]+)\s*tbsp"#, "tbsp"),
+            (#"([\d.]+)\s*tsp"#, "tsp"),
+            (#"([\d.]+)\s*fl\s*oz"#, "fl oz"),
+            (#"([\d.]+)\s*slice"#, "slice"),
+            (#"([\d.]+)\s*piece"#, "piece"),
+            (#"([\d.]+)\s*large"#, "large"),
+            (#"([\d.]+)\s*medium"#, "medium"),
+        ]
+        for (pattern, unit) in patterns {
+            if let match = serving.range(of: pattern, options: .regularExpression) {
+                let numStr = serving[match].filter { $0.isNumber || $0 == "." }
+                if let amount = Double(numStr), amount > 0 {
+                    return (unit, amount)
+                }
+            }
+        }
+
+        // Infer from category + grams
+        switch food.category {
+        case .protein:
+            let oz = round(grams / 28.35 * 10) / 10
+            return oz > 0 ? ("oz", oz) : ("g", grams)
+        case .grain:
+            if grams >= 100 {
+                let cups = round(grams / 160.0 * 10) / 10
+                return ("cup", max(0.25, cups))
+            }
+            return serving.contains("slice") ? ("slice", 1) : ("g", grams)
+        case .vegetable:
+            if grams >= 80 {
+                let cups = round(grams / 150.0 * 10) / 10
+                return ("cup", max(0.5, cups))
+            }
+            return ("g", grams)
+        case .fruit:
+            if grams >= 100 && grams <= 200 { return ("medium", 1) }
+            if grams > 200 {
+                let cups = round(grams / 150.0 * 10) / 10
+                return ("cup", cups)
+            }
+            return ("g", grams)
+        case .condiment, .fat:
+            let tbsp = round(grams / 15.0 * 10) / 10
+            return ("tbsp", max(0.5, tbsp))
+        case .beverage:
+            let flOz = round(grams / 29.6 * 10) / 10
+            return flOz > 0 ? ("fl oz", flOz) : ("g", grams)
+        case .dairy:
+            if serving.contains("cup") { return ("cup", 1) }
+            let oz = round(grams / 28.35 * 10) / 10
+            return oz > 0 ? ("oz", oz) : ("g", grams)
+        default:
+            if grams == 100 {
+                let name = food.name.lowercased()
+                if name.contains("chicken") || name.contains("beef") || name.contains("pork") ||
+                   name.contains("turkey") || name.contains("salmon") || name.contains("fish") ||
+                   name.contains("shrimp") || name.contains("steak") || name.contains("lamb") {
+                    return ("oz", 3.5)
+                }
+                if name.contains("rice") || name.contains("pasta") || name.contains("oat") {
+                    return ("cup", 0.5)
+                }
+            }
+            return ("g", grams)
+        }
     }
 
     // MARK: - Text Search
@@ -1060,37 +1115,20 @@ actor AIService {
         var wasCached = false
 
         do {
-            if useRAG {
-                // Check cache
-                let cacheKey = safeQuery
-                if NutritionCache.shared.get(for: cacheKey) != nil {
-                    wasCached = true
-                }
-
-                do {
-                    result = try await searchFoodWithRAG(query: safeQuery)
-                } catch {
-                    // RAG failed — try Supabase before going offline
-                    #if DEBUG
-                    print("[Fuel] RAG text analysis failed: \(error.localizedDescription). Trying Supabase fallback...")
-                    #endif
-                    result = try await searchFoodWithSupabase(query: safeQuery)
-                }
-            } else {
-                do {
-                    result = try await searchFoodWithSupabase(query: safeQuery)
-                } catch {
-                    // Supabase failed — try RAG if API key available
-                    if !ClaudeNutritionService.shared.apiKey.isEmpty {
-                        #if DEBUG
-                        print("[Fuel] Supabase text analysis failed: \(error.localizedDescription). Trying direct API...")
-                        #endif
-                        result = try await searchFoodWithRAG(query: safeQuery)
-                    } else {
-                        throw error
-                    }
-                }
+            // All AI calls route through the edge function (API key stays server-side)
+            let cacheKey = safeQuery
+            if NutritionCache.shared.get(for: cacheKey) != nil {
+                wasCached = true
             }
+
+            var edgeResult = try await searchFoodWithSupabase(query: safeQuery)
+            edgeResult = deduplicateItems(edgeResult)
+            edgeResult = crossValidateWithRAG(edgeResult)
+            edgeResult = applyUserCorrections(edgeResult)
+            edgeResult = flagOutlierItems(edgeResult)
+            edgeResult = crossItemSanityCheck(edgeResult)
+            edgeResult = validateMacroMath(edgeResult)
+            result = edgeResult
         } catch {
             // Both paths failed — try offline estimate as last resort
             if let offline = offlineEstimate(query: safeQuery) {
@@ -1159,12 +1197,16 @@ actor AIService {
     }
 
     private func searchFoodWithSupabase(query: String) async throws -> FoodAnalysis {
+        let headers = try await authHeaders()
         let result: FoodAnalysis = try await supabase.functions.invoke(
             "analyze-food",
-            options: .init(body: [
-                "query": query,
-                "request_type": "text"
-            ] as [String: String])
+            options: .init(
+                headers: headers,
+                body: [
+                    "query": query,
+                    "request_type": "text"
+                ] as [String: String]
+            )
         )
         return result
     }
@@ -1205,29 +1247,26 @@ actor AIService {
         }
 
         // Tier 3: Fall back to Supabase edge function (which tries Open Food Facts + Claude AI)
+        let headers = try await authHeaders()
         let result: FoodAnalysis
         do {
             let rawResult: FoodAnalysis = try await supabase.functions.invoke(
                 "analyze-food",
-                options: .init(body: [
-                    "barcode": safeBarcode,
-                    "request_type": "barcode"
-                ] as [String: String])
+                options: .init(
+                    headers: headers,
+                    body: [
+                        "barcode": safeBarcode,
+                        "request_type": "barcode"
+                    ] as [String: String]
+                )
             )
             result = useRAG ? enrichWithRAG(rawResult) : rawResult
         } catch {
-            // Supabase unreachable — try direct Claude API if key available
-            if !ClaudeNutritionService.shared.apiKey.isEmpty {
-                #if DEBUG
-                print("[Fuel] Supabase barcode lookup failed: \(error.localizedDescription). Trying direct API...")
-                #endif
-                let analysis = try await ClaudeNutritionService.shared.analyze(
-                    description: "Nutrition for the packaged product with barcode \(safeBarcode). If you recognize this barcode/UPC, provide accurate nutrition data. Otherwise provide your best estimate for a typical product."
-                )
-                result = analysis.toFoodAnalysis()
-            } else {
-                throw error
-            }
+            // Edge function failed — no direct API fallback (key stays server-side)
+            #if DEBUG
+            print("[Fuel] Supabase barcode lookup failed: \(error.localizedDescription)")
+            #endif
+            throw error
         }
 
         let elapsedMs = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
@@ -1249,6 +1288,8 @@ actor AIService {
             protein: food.protein,
             carbs: food.carbs,
             fat: food.fat,
+            fiber: food.fiber,
+            sugar: food.sugar,
             servingSize: food.serving,
             confidence: food.confidence == .high ? 0.95 : 0.75,
             note: note
@@ -1334,12 +1375,18 @@ actor AIService {
             }
             let food = best.food
             let confidence = best.score >= 10.0 ? 0.85 : (best.score >= 5.0 ? 0.7 : 0.55)
+            let measurement = Self.inferMeasurement(from: food)
             items.append(AnalyzedFoodItem(
                 id: UUID(), name: food.name,
                 calories: food.calories, protein: food.protein,
                 carbs: food.carbs, fat: food.fat,
-                servingSize: food.serving, confidence: confidence,
-                note: "Estimated from database (AI fallback)"
+                fiber: food.fiber, sugar: food.sugar,
+                servingSize: food.serving,
+                estimatedGrams: food.servingGrams,
+                measurementUnit: measurement.unit,
+                measurementAmount: measurement.amount,
+                confidence: confidence,
+                note: nil
             ))
             totalCal += food.calories
             totalP += food.protein
@@ -1352,9 +1399,9 @@ actor AIService {
 
         guard !items.isEmpty else { return nil }
         let displayName = items.count == 1 ? items[0].name : items.map(\.name).joined(separator: " & ")
-        var warnings = ["Estimated from database — AI analysis was unavailable"]
+        var warnings: [String] = []
         if !unmatchedItems.isEmpty {
-            warnings.append("Could not estimate: \(unmatchedItems.joined(separator: ", ")) — not in database")
+            warnings.append("Could not find: \(unmatchedItems.joined(separator: ", "))")
         }
         return FoodAnalysis(
             items: items, displayName: displayName,
@@ -1363,9 +1410,9 @@ actor AIService {
             totalCarbs: round(totalC * 10) / 10,
             totalFat: round(totalF * 10) / 10,
             fiberG: totalFiber, sugarG: totalSugar, sodiumMg: totalSodium,
-            warnings: warnings,
+            warnings: warnings.isEmpty ? nil : warnings,
             healthInsight: nil, calorieRange: nil,
-            confidenceReason: "RAG fallback from photo identification",
+            confidenceReason: "Offline estimate from food database (AI unavailable)",
             servingAssumed: items.first?.servingSize
         )
     }
@@ -1403,6 +1450,7 @@ actor AIService {
             let p = round(food.protein * scale * 10) / 10
             let c = round(food.carbs * scale * 10) / 10
             let f = round(food.fat * scale * 10) / 10
+            let measurement = Self.inferMeasurement(from: food)
 
             items.append(AnalyzedFoodItem(
                 id: UUID(),
@@ -1411,9 +1459,14 @@ actor AIService {
                 protein: p,
                 carbs: c,
                 fat: f,
+                fiber: food.fiber * scale,
+                sugar: food.sugar * scale,
                 servingSize: scale != 1.0 ? "\(String(format: "%.1f", scale))x \(food.serving)" : food.serving,
+                estimatedGrams: food.servingGrams * scale,
+                measurementUnit: measurement.unit,
+                measurementAmount: round(measurement.amount * scale * 10) / 10,
                 confidence: food.confidence == .high ? 0.85 : 0.6,
-                note: "Estimated from local database (offline)"
+                note: nil
             ))
 
             totalCal += cal
@@ -1444,12 +1497,472 @@ actor AIService {
             fiberG: totalFiber,
             sugarG: totalSugar,
             sodiumMg: totalSodium,
-            warnings: ["Offline estimate — accuracy may be lower than AI analysis"],
+            warnings: nil,
             healthInsight: nil,
             calorieRange: nil,
-            confidenceReason: "Matched to local database (no internet)",
+            confidenceReason: "Database estimate using USDA reference data",
             servingAssumed: items.first?.servingSize
         )
+    }
+
+    // MARK: - Local Search (no AI cost)
+
+    /// Searches local RAG database first, then USDA + Open Food Facts APIs if needed.
+    /// Zero AI cost — only uses free public APIs as fallback.
+    func searchFoodLocal(query: String) async -> FoodAnalysis? {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let safeQuery = String(trimmed.prefix(500))
+
+        let parsed = PortionParser.shared.parse(safeQuery)
+        let searchQuery = parsed.cleanedFoodName.isEmpty ? safeQuery : parsed.cleanedFoodName
+        let scale = parsed.scaleFactor
+
+        // Step 1: Try local RAG database (instant, < 10ms)
+        let ragResults = NutritionRAG.shared.retrieve(query: searchQuery, topK: 5)
+        let bestScore = ragResults.first?.score ?? 0
+
+        // Strong local match — use it directly
+        if bestScore >= 5.0, let result = buildLocalResult(from: ragResults, parsed: parsed, scale: scale, source: "nutrition database") {
+            // Still cache from APIs in background for future searches
+            if bestScore < 10.0 {
+                Task.detached(priority: .utility) {
+                    await Self.fetchAndCacheFromAPIs(query: searchQuery)
+                }
+            }
+            return result
+        }
+
+        // Step 2: Weak or no local match — query free APIs in parallel
+        // Use original query for APIs (better for branded products like "Chobani Greek yogurt")
+        // and cleaned name for USDA (better for whole foods like "chicken breast")
+        let apiQuery = safeQuery
+        #if DEBUG
+        print("[Fuel] Local search: weak RAG match (\(String(format: "%.1f", bestScore))) for '\(searchQuery)' — querying USDA + OFF APIs...")
+        #endif
+
+        async let usdaResults = Self.fetchUSDA(query: searchQuery)
+        async let offResults = Self.fetchOFF(query: apiQuery)
+
+        let usda = await usdaResults
+        let off = await offResults
+
+        // If task was cancelled while waiting for APIs, bail out
+        guard !Task.isCancelled else { return nil }
+
+        // Cache all results for future instant lookups
+        let allAPIFoods = usda + off
+        if !allAPIFoods.isEmpty {
+            FoodAPICache.shared.addAll(allAPIFoods)
+        }
+
+        // Step 3: Pick best result from all sources
+        // Combine API results with local RAG results and pick the best match
+        let bestAPIFood = Self.pickBestMatch(query: searchQuery, from: allAPIFoods)
+
+        if let apiFood = bestAPIFood {
+            // Build result from API food
+            let cal = Int(Double(apiFood.calories) * scale)
+            let p = round(apiFood.protein * scale * 10) / 10
+            let c = round(apiFood.carbs * scale * 10) / 10
+            let f = round(apiFood.fat * scale * 10) / 10
+            let confidence: Double = apiFood.confidence == .high ? 0.85 : 0.7
+            let measurement = Self.inferMeasurement(from: apiFood)
+
+            let item = AnalyzedFoodItem(
+                id: UUID(),
+                name: apiFood.name,
+                calories: cal,
+                protein: p,
+                carbs: c,
+                fat: f,
+                fiber: apiFood.fiber * scale,
+                sugar: apiFood.sugar * scale,
+                servingSize: scale != 1.0 ? "\(String(format: "%.1f", scale))x \(apiFood.serving)" : apiFood.serving,
+                estimatedGrams: apiFood.servingGrams * scale,
+                measurementUnit: measurement.unit,
+                measurementAmount: round(measurement.amount * scale * 10) / 10,
+                confidence: confidence,
+                note: nil
+            )
+
+            return FoodAnalysis(
+                items: [item],
+                displayName: apiFood.name,
+                totalCalories: cal,
+                totalProtein: p,
+                totalCarbs: c,
+                totalFat: f,
+                fiberG: apiFood.fiber * scale,
+                sugarG: apiFood.sugar * scale,
+                sodiumMg: apiFood.sodium * scale,
+                warnings: nil,
+                healthInsight: Self.localFoodInsight(name: apiFood.name, calories: cal, protein: p, carbs: c, fat: f),
+                calorieRange: nil,
+                confidenceReason: nil,
+                servingAssumed: item.servingSize
+            )
+        }
+
+        // Step 4: Fall back to weak local match if APIs returned nothing
+        if let result = buildLocalResult(from: ragResults, parsed: parsed, scale: scale, source: "nutrition database") {
+            return result
+        }
+
+        return nil
+    }
+
+    /// Build a FoodAnalysis from RAG results.
+    private func buildLocalResult(from results: [RetrievalResult], parsed: ParsedPortion, scale: Double, source: String) -> FoodAnalysis? {
+        guard let best = results.first, best.score >= 2.0 else { return nil }
+
+        var seenNames = Set<String>()
+        let topMatches = results.filter { result in
+            let dominated = result.score >= 4.0 || result.food.name == results.first?.food.name
+            guard dominated else { return false }
+            let key = result.food.name.lowercased().trimmingCharacters(in: .whitespaces)
+            let isDuplicate = seenNames.contains { seen in key.contains(seen) || seen.contains(key) }
+            guard !isDuplicate else { return false }
+            seenNames.insert(key)
+            return true
+        }
+
+        var items: [AnalyzedFoodItem] = []
+        var totalCal = 0, totalFiber = 0.0, totalSugar = 0.0, totalSodium = 0.0
+        var totalP = 0.0, totalC = 0.0, totalF = 0.0
+
+        for match in topMatches.prefix(3) {
+            let food = match.food
+            let cal = Int(Double(food.calories) * scale)
+            let p = round(food.protein * scale * 10) / 10
+            let c = round(food.carbs * scale * 10) / 10
+            let f = round(food.fat * scale * 10) / 10
+            let measurement = Self.inferMeasurement(from: food)
+
+            items.append(AnalyzedFoodItem(
+                id: UUID(),
+                name: food.name,
+                calories: cal,
+                protein: p,
+                carbs: c,
+                fat: f,
+                fiber: food.fiber * scale,
+                sugar: food.sugar * scale,
+                servingSize: scale != 1.0 ? "\(String(format: "%.1f", scale))x \(food.serving)" : food.serving,
+                estimatedGrams: food.servingGrams * scale,
+                measurementUnit: measurement.unit,
+                measurementAmount: round(measurement.amount * scale * 10) / 10,
+                confidence: food.confidence == .high ? 0.85 : 0.65,
+                note: nil
+            ))
+
+            totalCal += cal
+            totalP += p
+            totalC += c
+            totalF += f
+            totalFiber += food.fiber * scale
+            totalSugar += food.sugar * scale
+            totalSodium += food.sodium * scale
+
+            if topMatches.count <= 1 { break }
+            if match.score < best.score * 0.6 { break }
+        }
+
+        guard !items.isEmpty else { return nil }
+        let displayName = items.count == 1 ? items[0].name : parsed.originalQuery
+
+        return FoodAnalysis(
+            items: items,
+            displayName: displayName,
+            totalCalories: totalCal,
+            totalProtein: totalP,
+            totalCarbs: totalC,
+            totalFat: totalF,
+            fiberG: totalFiber,
+            sugarG: totalSugar,
+            sodiumMg: totalSodium,
+            warnings: nil,
+            healthInsight: Self.localFoodInsight(name: displayName, calories: totalCal, protein: totalP, carbs: totalC, fat: totalF),
+            calorieRange: nil,
+            confidenceReason: nil,
+            servingAssumed: items.first?.servingSize
+        )
+    }
+
+    /// Fetch from USDA API (free) with timeout. Returns empty array on failure.
+    private static func fetchUSDA(query: String) async -> [FoodItem] {
+        await withTimeoutOrEmpty(seconds: 5) {
+            (try? await USDAFoodService.shared.search(query: query, pageSize: 5)) ?? []
+        }
+    }
+
+    /// Fetch from Open Food Facts API (free) with timeout. Returns empty array on failure.
+    private static func fetchOFF(query: String) async -> [FoodItem] {
+        await withTimeoutOrEmpty(seconds: 5) {
+            (try? await OpenFoodFactsService.shared.search(query: query, pageSize: 5)) ?? []
+        }
+    }
+
+    /// Run an async operation with a timeout — returns empty array if it takes too long.
+    private static func withTimeoutOrEmpty(seconds: Double, operation: @Sendable @escaping () async -> [FoodItem]) async -> [FoodItem] {
+        await withTaskGroup(of: [FoodItem].self) { group in
+            group.addTask { await operation() }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(seconds))
+                return []
+            }
+            // Return whichever finishes first
+            let first = await group.next() ?? []
+            group.cancelAll()
+            return first
+        }
+    }
+
+    /// Pick the best matching FoodItem from API results using name similarity scoring.
+    private static func pickBestMatch(query: String, from foods: [FoodItem]) -> FoodItem? {
+        guard !foods.isEmpty else { return nil }
+        let queryLower = query.lowercased()
+        let queryTokens = Set(queryLower.split(separator: " ").filter { $0.count > 1 }.map(String.init))
+        guard !queryTokens.isEmpty else { return foods.first }
+
+        var bestFood: FoodItem?
+        var bestScore = 0
+
+        for food in foods {
+            let nameLower = food.name.lowercased()
+            let nameTokens = Set(nameLower.split(separator: " ").filter { $0.count > 1 }.map(String.init))
+            var score = 0
+
+            // Exact containment (strong signal)
+            if nameLower.contains(queryLower) { score += 15 }
+            else if queryLower.contains(nameLower) { score += 12 }
+
+            // Token overlap — weighted by coverage of query
+            let overlap = queryTokens.intersection(nameTokens).count
+            score += overlap * 4
+
+            // Bonus for matching most of the query tokens
+            if queryTokens.count > 0 {
+                let coverage = Double(overlap) / Double(queryTokens.count)
+                if coverage >= 0.8 { score += 5 }
+                else if coverage >= 0.5 { score += 2 }
+            }
+
+            // Prefix matching (e.g., query "chick" matches "chicken")
+            for qt in queryTokens {
+                if nameTokens.contains(where: { $0.hasPrefix(qt) || qt.hasPrefix($0) }) && !nameTokens.contains(qt) {
+                    score += 2
+                }
+            }
+
+            // Prefer items with calories (skip zero-cal results unless explicitly searching for water/diet)
+            if food.calories > 0 { score += 1 }
+
+            // Prefer high confidence (USDA > Open Food Facts)
+            if food.confidence == .high { score += 3 }
+
+            if score > bestScore {
+                bestScore = score
+                bestFood = food
+            }
+        }
+
+        // Require at least one meaningful token match
+        return bestScore >= 4 ? bestFood : foods.first
+    }
+
+    /// Generates a quick local health insight for a food item — no API call.
+    private static func localFoodInsight(name: String, calories: Int, protein: Double, carbs: Double, fat: Double) -> String? {
+        var insights: [String] = []
+        let total = protein + carbs + fat
+        guard total > 0 else { return nil }
+
+        let proteinPct = protein / total
+        let fatPct = fat / total
+
+        if protein >= 20 { insights.append("Great protein source at \(Int(protein))g — helps with muscle recovery and satiety.") }
+        if protein >= 30 { insights.append("Packed with \(Int(protein))g protein — excellent for hitting your daily target.") }
+        if proteinPct > 0.4 { insights.append("High protein-to-calorie ratio makes this a smart choice for staying full longer.") }
+        if calories < 200 && protein >= 10 { insights.append("Low calorie with solid protein — a great snack option.") }
+        if calories < 150 { insights.append("Light choice at only \(calories) cal — easy to fit into any meal plan.") }
+        if calories > 600 { insights.append("Calorie-dense at \(calories) cal — consider a smaller portion or pairing with lighter sides.") }
+        if fatPct > 0.5 && fat > 15 { insights.append("Higher in fat — consider balancing with lean protein at your next meal.") }
+        if carbs > 50 && protein < 10 { insights.append("Carb-heavy with less protein — try adding a protein source for better balance.") }
+        if carbs < 10 && calories < 300 { insights.append("Low-carb option — fits well into keto or low-carb plans.") }
+        if fat < 5 && calories < 300 { insights.append("Very low in fat — a lean option that leaves room for healthy fats elsewhere.") }
+
+        return insights.randomElement()
+    }
+
+    // MARK: - Local Daily Insights (no AI cost)
+
+    /// Generates a contextual daily insight using templates — zero API calls.
+    /// Picks from 60+ templates based on actual user data for variety.
+    nonisolated static func generateLocalInsight(
+        calories: Int,
+        protein: Double,
+        carbs: Double,
+        fat: Double,
+        targetCalories: Int,
+        targetProtein: Int,
+        mealCount: Int,
+        goalType: String
+    ) -> String {
+        let calRemaining = targetCalories - calories
+        let proteinRemaining = Double(targetProtein) - protein
+        let calPct = targetCalories > 0 ? Double(calories) / Double(targetCalories) : 0
+        let proteinPct = targetProtein > 0 ? protein / Double(targetProtein) : 0
+        let isOver = calories > targetCalories
+        let isClose = calPct >= 0.85 && calPct <= 1.05
+        let proteinHit = proteinPct >= 0.9
+        let proteinLow = proteinPct < 0.5
+        let isLosing = goalType == "lose"
+        let isGaining = goalType == "gain"
+
+        var pool: [String] = []
+
+        // -- Calorie-based insights --
+        if isOver {
+            let overBy = calories - targetCalories
+            pool.append("You're \(overBy) cal over target. Not a setback — just adjust tomorrow and stay consistent.")
+            pool.append("Went \(overBy) cal over today. One day doesn't define your progress. Reset and keep going.")
+            pool.append("Over by \(overBy) cal. Consider a lighter dinner or an extra walk to balance things out.")
+            pool.append("A little over target today. Your body won't notice one day — consistency over weeks is what matters.")
+            pool.append("Don't stress the extra \(overBy) cal. Focus on making your next meal a solid choice.")
+            pool.append("Over target by \(overBy) cal — happens to everyone. What matters is what you do next.")
+        } else if isClose {
+            pool.append("Right on target! You nailed your calories today — that consistency builds real results.")
+            pool.append("Almost perfect calorie day! This kind of consistency is exactly how goals get crushed.")
+            pool.append("You're within striking distance of your target. Solid day of tracking.")
+            pool.append("Great control today — hitting your calorie target consistently is the #1 factor in progress.")
+            pool.append("Dialed in. Your calorie accuracy today is exactly what drives long-term results.")
+            pool.append("Textbook day. Keeping calories in this range is how you build sustainable habits.")
+        } else if calRemaining > 500 {
+            pool.append("You have \(calRemaining) cal left — room for a solid meal. Don't skip it, fuel your body.")
+            pool.append("Still \(calRemaining) cal to go. Consider a balanced meal with protein and healthy fats.")
+            pool.append("Plenty of room left today (\(calRemaining) cal). A protein-rich dinner would be perfect right now.")
+            pool.append("You're running a big deficit with \(calRemaining) cal left. Make sure you eat enough — undereating slows progress too.")
+            pool.append("\(calRemaining) cal remaining. A meal with chicken, rice, and veggies would fit perfectly here.")
+        } else if calRemaining > 200 {
+            pool.append("\(calRemaining) cal left for the day — a smart snack like Greek yogurt or nuts would be perfect.")
+            pool.append("Room for \(calRemaining) more calories. A light snack with protein will keep you satisfied tonight.")
+            pool.append("You've got \(calRemaining) cal to work with. Consider a protein shake or some cottage cheese.")
+            pool.append("Nice pacing — \(calRemaining) cal left. You could fit a small dessert and still hit your goal.")
+        } else if calRemaining > 0 {
+            pool.append("Just \(calRemaining) cal left — you're basically done for the day. Strong finish.")
+            pool.append("Almost at target with only \(calRemaining) cal remaining. Disciplined day.")
+            pool.append("Tiny gap of \(calRemaining) cal left. A piece of fruit would round out the day nicely.")
+        }
+
+        // -- Protein-based insights --
+        if proteinHit {
+            pool.append("Protein goal crushed at \(Int(protein))g! Your muscles are thanking you.")
+            pool.append("Hit \(Int(protein))g protein today — excellent for recovery and keeping you full.")
+            pool.append("Protein on point. Hitting \(Int(protein))g consistently is key for body composition.")
+            pool.append("Strong protein day at \(Int(protein))g. This is how you maintain muscle while managing calories.")
+        } else if proteinLow && mealCount >= 2 {
+            pool.append("Only \(Int(protein))g protein so far — try to include a high-protein food in your next meal.")
+            pool.append("Protein is running low at \(Int(protein))g. Consider chicken, fish, eggs, or a protein shake.")
+            pool.append("You're at \(Int(protein))g protein with \(Int(proteinRemaining))g to go. Lean meats or Greek yogurt can help close that gap.")
+            pool.append("Protein needs attention — \(Int(protein))g of \(targetProtein)g. Add a protein-rich food to your next meal.")
+        } else if !proteinHit && proteinPct >= 0.5 {
+            pool.append("Protein at \(Int(protein))g — solid progress. One more protein-rich meal and you'll hit your target.")
+            pool.append("Halfway there on protein (\(Int(protein))g). A chicken breast or fish fillet would close the gap.")
+            pool.append("Good protein progress at \(Int(protein))g. Keep prioritizing it in your remaining meals.")
+        }
+
+        // -- Meal count insights --
+        if mealCount == 0 {
+            pool.append("No meals logged yet today. Start tracking to stay on top of your goals!")
+            pool.append("Your food log is empty. Log your first meal to get today's tracking started.")
+        } else if mealCount == 1 {
+            pool.append("One meal logged. Keep tracking throughout the day for the best accuracy.")
+            pool.append("Good start with your first meal logged! Consistency in logging is what makes tracking work.")
+        } else if mealCount >= 4 {
+            pool.append("\(mealCount) meals logged — excellent tracking discipline! This level of detail gives you the best insights.")
+            pool.append("Impressive — \(mealCount) meals tracked today. The more you log, the better your data.")
+            pool.append("You've logged \(mealCount) meals. That kind of commitment to tracking is rare and powerful.")
+        } else if mealCount >= 2 {
+            pool.append("\(mealCount) meals tracked so far. You're building a clear picture of your nutrition today.")
+            pool.append("Good tracking with \(mealCount) meals logged. Each entry makes your data more accurate.")
+        }
+
+        // -- Goal-specific insights --
+        if isLosing {
+            if isClose || (!isOver && calRemaining < 200) {
+                pool.append("Staying near your target is how weight loss actually happens — through daily consistency, not perfection.")
+                pool.append("You're in a great deficit zone. Keep this up and the scale will follow.")
+                pool.append("Solid day for fat loss. Remember: it's the weekly average that matters most.")
+            }
+            if protein >= 25 {
+                pool.append("Good protein intake for a cut — this helps preserve muscle while losing fat.")
+                pool.append("Keeping protein high during a cut is smart. It reduces muscle loss and keeps hunger in check.")
+            }
+            pool.append("Tip: eating more protein and fiber helps you feel full on fewer calories.")
+            pool.append("Focus on protein and vegetables to stay satisfied while in a calorie deficit.")
+        } else if isGaining {
+            if isOver || calPct >= 0.95 {
+                pool.append("Hitting your calorie target is crucial for gaining. Great job fueling your body today.")
+                pool.append("Solid calories for a bulk. Make sure you're training hard to put those nutrients to work.")
+            }
+            if calRemaining > 300 {
+                pool.append("Still \(calRemaining) cal to go for your surplus. A calorie-dense snack like nuts or a shake can help.")
+                pool.append("You need \(calRemaining) more cal to hit your gain target. Don't leave gains on the table!")
+            }
+            pool.append("For gaining, aim to hit your calorie target every day. Consistency in surplus = consistent growth.")
+            pool.append("Tip: spreading meals throughout the day makes it easier to hit higher calorie targets.")
+        } else {
+            // Maintain
+            if isClose {
+                pool.append("Maintenance on point. Eating at target keeps your weight stable and energy consistent.")
+                pool.append("Right at your maintenance calories — this is the sweet spot for holding your current physique.")
+            }
+            pool.append("Maintaining weight is about hitting your target most days. You're doing great.")
+            pool.append("Balance is key for maintenance. Keep hitting your targets and your body stays where you want it.")
+        }
+
+        // -- Macro balance insights --
+        let totalMacroG = protein + carbs + fat
+        if totalMacroG > 0 {
+            let carbPct = carbs / totalMacroG
+            let fatPctMacro = fat / totalMacroG
+            let protPctMacro = protein / totalMacroG
+
+            if carbPct > 0.6 {
+                pool.append("Carbs are dominating today (\(Int(carbs))g). Try adding more protein and healthy fats for balance.")
+                pool.append("Heavy on carbs today. Pair your next carb-heavy meal with a good protein source.")
+            }
+            if fatPctMacro > 0.45 {
+                pool.append("Fat is higher than usual at \(Int(fat))g. Balance with leaner protein sources in your next meal.")
+                pool.append("Running high on fats today. Choose grilled or baked options over fried for the rest of the day.")
+            }
+            if protPctMacro > 0.35 && protPctMacro < 0.5 {
+                pool.append("Great macro balance today — protein is leading the way. Keep it up.")
+                pool.append("Your protein ratio is solid. This kind of macro split supports both performance and recovery.")
+            }
+        }
+
+        // -- General wisdom (always available) --
+        let generalTips = [
+            "Hydration matters — aim for 8+ glasses of water today. It supports metabolism and reduces false hunger signals.",
+            "Eating slowly helps your body register fullness. Try putting your fork down between bites.",
+            "Meal prepping even 2-3 meals ahead makes staying on target dramatically easier.",
+            "Sleep quality directly impacts hunger hormones. Prioritize 7-9 hours for easier appetite control.",
+            "Don't forget fiber — it keeps digestion smooth and helps you feel full. Aim for 25-30g daily.",
+            "Variety in your protein sources (chicken, fish, eggs, legumes) ensures you get a full amino acid profile.",
+            "Progress isn't linear. Trust the process and focus on the habits, not just the numbers.",
+            "Logging consistently — even on \"bad\" days — is what separates people who succeed from those who don't.",
+            "Consider your meal timing. Eating most of your calories earlier in the day can improve energy and sleep.",
+            "Vegetables are your secret weapon — high volume, low calories, tons of micronutrients.",
+            "A post-workout meal with both protein and carbs maximizes recovery and muscle growth.",
+            "Healthy fats (avocado, olive oil, nuts) are calorie-dense but crucial for hormone health.",
+            "If you're craving something, have a small portion. Restriction often leads to bigger binges later.",
+            "Walking after meals can improve digestion and help regulate blood sugar levels.",
+            "Track for awareness, not obsession. The goal is understanding your body, not perfection.",
+        ]
+        pool.append(contentsOf: generalTips.shuffled().prefix(3))
+
+        return pool.randomElement() ?? "Keep tracking your meals to stay on top of your nutrition goals!"
     }
 
     // MARK: - Chat & Insights (unchanged, always Supabase)
@@ -1477,7 +1990,26 @@ actor AIService {
         return ChatAIResponse(message: result.message, cards: result.cards)
     }
 
-    func generateDailyInsight(summary: DailySummary, profile: UserProfile) async throws -> String {
+    func generateDailyInsight(summary: DailySummary, profile: UserProfile, isPremium: Bool = false) async throws -> String {
+        let targetCal = profile.targetCalories ?? 2000
+        let targetProt = profile.targetProtein ?? 150
+        let goalType = profile.goalType?.rawValue ?? "maintain"
+
+        // Free users: local templated insight (no API cost)
+        guard isPremium else {
+            return Self.generateLocalInsight(
+                calories: summary.totalCalories,
+                protein: summary.totalProtein,
+                carbs: summary.totalCarbs,
+                fat: summary.totalFat,
+                targetCalories: targetCal,
+                targetProtein: targetProt,
+                mealCount: summary.meals.count,
+                goalType: goalType
+            )
+        }
+
+        // Premium users: AI-generated insight via edge function
         struct InsightRequest: Encodable {
             let calories: Int
             let protein: Double
@@ -1494,10 +2026,10 @@ actor AIService {
             protein: summary.totalProtein,
             carbs: summary.totalCarbs,
             fat: summary.totalFat,
-            target_calories: profile.targetCalories ?? 2000,
-            target_protein: profile.targetProtein ?? 150,
+            target_calories: targetCal,
+            target_protein: targetProt,
             meal_count: summary.meals.count,
-            goal_type: profile.goalType?.rawValue ?? "maintain"
+            goal_type: goalType
         )
 
         let result: InsightResponse = try await supabase.functions.invoke(
@@ -1522,6 +2054,7 @@ extension NutritionAnalysis {
                 carbs: item.carbs,
                 fat: item.fat,
                 servingSize: item.quantity,
+                estimatedGrams: item.estimatedGrams,
                 confidence: Self.mapConfidence(confidence),
                 note: item.note
             )
@@ -1587,13 +2120,17 @@ struct FoodAnalysis: Codable, Sendable {
     let fiberG: Double?
     let sugarG: Double?
     let sodiumMg: Double?
+    let cholesterolMg: Double?
+    let saturatedFatG: Double?
+    let healthScore: Int?
+    let healthScoreReason: String?
     let warnings: [String]?
     let healthInsight: String?
     let calorieRange: CalorieRange?
     let confidenceReason: String?
     let servingAssumed: String?
 
-    init(items: [AnalyzedFoodItem], displayName: String, totalCalories: Int, totalProtein: Double, totalCarbs: Double, totalFat: Double, fiberG: Double? = nil, sugarG: Double? = nil, sodiumMg: Double? = nil, warnings: [String]? = nil, healthInsight: String? = nil, calorieRange: CalorieRange? = nil, confidenceReason: String? = nil, servingAssumed: String? = nil) {
+    init(items: [AnalyzedFoodItem], displayName: String, totalCalories: Int, totalProtein: Double, totalCarbs: Double, totalFat: Double, fiberG: Double? = nil, sugarG: Double? = nil, sodiumMg: Double? = nil, cholesterolMg: Double? = nil, saturatedFatG: Double? = nil, healthScore: Int? = nil, healthScoreReason: String? = nil, warnings: [String]? = nil, healthInsight: String? = nil, calorieRange: CalorieRange? = nil, confidenceReason: String? = nil, servingAssumed: String? = nil) {
         self.items = items
         self.displayName = displayName
         self.totalCalories = totalCalories
@@ -1603,6 +2140,10 @@ struct FoodAnalysis: Codable, Sendable {
         self.fiberG = fiberG
         self.sugarG = sugarG
         self.sodiumMg = sodiumMg
+        self.cholesterolMg = cholesterolMg
+        self.saturatedFatG = saturatedFatG
+        self.healthScore = healthScore
+        self.healthScoreReason = healthScoreReason
         self.warnings = warnings
         self.healthInsight = healthInsight
         self.calorieRange = calorieRange
@@ -1620,6 +2161,10 @@ struct FoodAnalysis: Codable, Sendable {
         case fiberG = "fiber_g"
         case sugarG = "sugar_g"
         case sodiumMg = "sodium_mg"
+        case cholesterolMg = "cholesterol_mg"
+        case saturatedFatG = "saturated_fat_g"
+        case healthScore = "health_score"
+        case healthScoreReason = "health_score_reason"
         case warnings
         case healthInsight = "health_insight"
         case calorieRange = "calorie_range"
@@ -1631,7 +2176,6 @@ struct FoodAnalysis: Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         items = (try? container.decode([AnalyzedFoodItem].self, forKey: .items)) ?? []
         displayName = (try? container.decode(String.self, forKey: .displayName)) ?? "Unknown"
-        // Handle totalCalories as Int or Double
         if let intVal = try? container.decode(Int.self, forKey: .totalCalories) {
             totalCalories = intVal
         } else if let doubleVal = try? container.decode(Double.self, forKey: .totalCalories) {
@@ -1645,6 +2189,10 @@ struct FoodAnalysis: Codable, Sendable {
         fiberG = try? container.decode(Double.self, forKey: .fiberG)
         sugarG = try? container.decode(Double.self, forKey: .sugarG)
         sodiumMg = try? container.decode(Double.self, forKey: .sodiumMg)
+        cholesterolMg = try? container.decode(Double.self, forKey: .cholesterolMg)
+        saturatedFatG = try? container.decode(Double.self, forKey: .saturatedFatG)
+        healthScore = try? container.decode(Int.self, forKey: .healthScore)
+        healthScoreReason = try? container.decode(String.self, forKey: .healthScoreReason)
         warnings = try? container.decode([String].self, forKey: .warnings)
         healthInsight = try? container.decode(String.self, forKey: .healthInsight)
         calorieRange = try? container.decode(CalorieRange.self, forKey: .calorieRange)
@@ -1660,27 +2208,40 @@ struct AnalyzedFoodItem: Codable, Identifiable, Sendable {
     let protein: Double
     let carbs: Double
     let fat: Double
+    let fiber: Double
+    let sugar: Double
     let servingSize: String
+    let estimatedGrams: Double
+    let measurementUnit: String
+    let measurementAmount: Double
     let confidence: Double
     let note: String?
     var quantity: Double
 
     enum CodingKeys: String, CodingKey {
-        case id, name, calories, protein, carbs, fat
+        case id, name, calories, protein, carbs, fat, fiber, sugar
         case servingSize = "serving_size"
+        case estimatedGrams = "estimated_grams"
+        case measurementUnit = "measurement_unit"
+        case measurementAmount = "measurement_amount"
         case confidence
         case note
         case quantity
     }
 
-    init(id: UUID = UUID(), name: String, calories: Int, protein: Double, carbs: Double, fat: Double, servingSize: String, confidence: Double, note: String? = nil, quantity: Double = 1.0) {
+    init(id: UUID = UUID(), name: String, calories: Int, protein: Double, carbs: Double, fat: Double, fiber: Double = 0, sugar: Double = 0, servingSize: String, estimatedGrams: Double = 0, measurementUnit: String = "g", measurementAmount: Double = 1.0, confidence: Double, note: String? = nil, quantity: Double = 1.0) {
         self.id = id
         self.name = name
         self.calories = calories
         self.protein = protein
         self.carbs = carbs
         self.fat = fat
+        self.fiber = fiber
+        self.sugar = sugar
         self.servingSize = servingSize
+        self.estimatedGrams = estimatedGrams
+        self.measurementUnit = measurementUnit
+        self.measurementAmount = measurementAmount
         self.confidence = confidence
         self.note = note
         self.quantity = quantity
@@ -1690,7 +2251,6 @@ struct AnalyzedFoodItem: Codable, Identifiable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = (try? container.decode(UUID.self, forKey: .id)) ?? UUID()
         name = (try? container.decode(String.self, forKey: .name)) ?? "Unknown"
-        // Handle calories as Int or Double (Claude sometimes returns 350.0)
         if let intVal = try? container.decode(Int.self, forKey: .calories) {
             calories = intVal
         } else if let doubleVal = try? container.decode(Double.self, forKey: .calories) {
@@ -1701,7 +2261,12 @@ struct AnalyzedFoodItem: Codable, Identifiable, Sendable {
         protein = (try? container.decode(Double.self, forKey: .protein)) ?? 0
         carbs = (try? container.decode(Double.self, forKey: .carbs)) ?? 0
         fat = (try? container.decode(Double.self, forKey: .fat)) ?? 0
+        fiber = (try? container.decode(Double.self, forKey: .fiber)) ?? 0
+        sugar = (try? container.decode(Double.self, forKey: .sugar)) ?? 0
         servingSize = (try? container.decode(String.self, forKey: .servingSize)) ?? ""
+        estimatedGrams = (try? container.decode(Double.self, forKey: .estimatedGrams)) ?? 0
+        measurementUnit = (try? container.decode(String.self, forKey: .measurementUnit)) ?? "g"
+        measurementAmount = (try? container.decode(Double.self, forKey: .measurementAmount)) ?? 1.0
         confidence = (try? container.decode(Double.self, forKey: .confidence)) ?? 0.8
         note = try? container.decode(String.self, forKey: .note)
         quantity = (try? container.decode(Double.self, forKey: .quantity)) ?? 1.0
@@ -1736,6 +2301,8 @@ final class SendableBox<T>: @unchecked Sendable {
 struct UserContext: Sendable {
     let targetCalories: Int
     let targetProtein: Int
+    let targetCarbs: Int
+    let targetFat: Int
     let todayCalories: Int
     let todayProtein: Double
     let todayCarbs: Double
@@ -1743,11 +2310,21 @@ struct UserContext: Sendable {
     let goalType: String
     let recentMeals: [String]
     let streak: Int
+    let displayName: String?
+    let dietStyle: String?
+    let weekHistory: [WeekDaySummary]
+    let topFoods: [String]
+    let weightTrend: String?
+    let todayMealsDetail: String?
+    let yesterdayCalories: Int?
+    let yesterdayTarget: Int?
 
     func toDictionary() -> [String: String] {
-        [
+        var dict = [
             "target_calories": "\(targetCalories)",
             "target_protein": "\(targetProtein)",
+            "target_carbs": "\(targetCarbs)",
+            "target_fat": "\(targetFat)",
             "today_calories": "\(todayCalories)",
             "today_protein": "\(todayProtein)",
             "today_carbs": "\(todayCarbs)",
@@ -1756,5 +2333,30 @@ struct UserContext: Sendable {
             "recent_meals": recentMeals.joined(separator: ", "),
             "streak": "\(streak)"
         ]
+        if let name = displayName, !name.isEmpty { dict["display_name"] = name }
+        if let diet = dietStyle, !diet.isEmpty { dict["diet_style"] = diet }
+
+        // 7-day history
+        if !weekHistory.isEmpty {
+            let weekJson = weekHistory.map { d in
+                "{\"date\":\"\(d.date)\",\"cal\":\(d.calories),\"p\":\(Int(d.protein)),\"c\":\(Int(d.carbs)),\"f\":\(Int(d.fat)),\"on_target\":\(d.isOnTarget)}"
+            }.joined(separator: ",")
+            dict["week_history"] = "[\(weekJson)]"
+        }
+        if !topFoods.isEmpty { dict["top_foods"] = topFoods.joined(separator: ", ") }
+        if let wt = weightTrend, !wt.isEmpty { dict["weight_trend"] = wt }
+        if let detail = todayMealsDetail, !detail.isEmpty { dict["today_meals_detail"] = detail }
+        if let yc = yesterdayCalories, yc > 0 { dict["yesterday_calories"] = "\(yc)" }
+        if let yt = yesterdayTarget, yt > 0 { dict["yesterday_target"] = "\(yt)" }
+        return dict
     }
+}
+
+struct WeekDaySummary: Sendable {
+    let date: String
+    let calories: Int
+    let protein: Double
+    let carbs: Double
+    let fat: Double
+    let isOnTarget: Bool
 }

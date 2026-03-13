@@ -191,12 +191,12 @@ struct CalorieTrendChart: View {
             }
         }
         .padding(FuelSpacing.lg)
-        .background(FuelColors.cloud)
-        .clipShape(RoundedRectangle(cornerRadius: FuelRadius.card))
+        .fuelCard()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(chartAccessibilityLabel)
         .onAppear { animateIn() }
         .onChange(of: summaries.map(\.totalCalories)) { _, _ in animateIn() }
+        .onChange(of: period) { _, _ in animateIn() }
     }
 
     private var chartAccessibilityLabel: String {
@@ -226,13 +226,44 @@ struct CalorieTrendChart: View {
     // MARK: - Empty State
 
     private var emptyState: some View {
-        VStack(spacing: FuelSpacing.sm) {
-            Image(systemName: "chart.line.uptrend.xyaxis")
-                .font(FuelType.title)
-                .foregroundStyle(FuelColors.fog)
+        VStack(spacing: FuelSpacing.md) {
+            ZStack {
+                // Ghost area fill
+                GhostChartShape()
+                    .fill(
+                        LinearGradient(
+                            colors: [FuelColors.flame.opacity(0.15), FuelColors.flame.opacity(0.02)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .frame(height: 140)
 
-            Text("Log meals to see your trend")
-                .font(FuelType.body)
+                // Ghost line
+                GhostLineShape()
+                    .stroke(FuelColors.flame.opacity(0.25), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .frame(height: 140)
+
+                // Ghost target line
+                Rectangle()
+                    .fill(FuelColors.fog.opacity(0.3))
+                    .frame(height: 1)
+                    .offset(y: -10)
+
+                // Ghost dots
+                HStack(spacing: 0) {
+                    ForEach(0..<7, id: \.self) { _ in
+                        Circle()
+                            .fill(FuelColors.flame.opacity(0.2))
+                            .frame(width: 6, height: 6)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .offset(y: 20)
+            }
+
+            Text("Log meals to see your calorie trend")
+                .font(FuelType.caption)
                 .foregroundStyle(FuelColors.stone)
         }
         .frame(maxWidth: .infinity, minHeight: 200)
@@ -256,5 +287,40 @@ struct CalorieTrendChart: View {
         case .month: return .dateTime.month(.abbreviated).day()
         case .threeMonth: return .dateTime.month(.abbreviated)
         }
+    }
+}
+
+// MARK: - Ghost Chart Shapes
+
+private struct GhostLineShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let points: [CGFloat] = [0.6, 0.4, 0.55, 0.3, 0.5, 0.35, 0.45]
+        guard points.count > 1 else { return Path() }
+        var path = Path()
+        for (i, pct) in points.enumerated() {
+            let x = rect.width * CGFloat(i) / CGFloat(points.count - 1)
+            let y = rect.height * pct
+            if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
+            else { path.addLine(to: CGPoint(x: x, y: y)) }
+        }
+        return path
+    }
+}
+
+private struct GhostChartShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let points: [CGFloat] = [0.6, 0.4, 0.55, 0.3, 0.5, 0.35, 0.45]
+        guard points.count > 1 else { return Path() }
+        var path = Path()
+        for (i, pct) in points.enumerated() {
+            let x = rect.width * CGFloat(i) / CGFloat(points.count - 1)
+            let y = rect.height * pct
+            if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
+            else { path.addLine(to: CGPoint(x: x, y: y)) }
+        }
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+        return path
     }
 }

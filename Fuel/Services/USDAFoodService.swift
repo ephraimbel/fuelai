@@ -6,7 +6,9 @@ final class USDAFoodService: @unchecked Sendable {
     static let shared = USDAFoodService()
     private init() {}
 
-    // Demo key works for moderate usage. Replace with a real key for production.
+    // USDA FoodData Central API key — free at https://api.data.gov
+    // DEMO_KEY works but is rate-limited to 30 req/hour per IP.
+    // Register a free key for 1,000 req/hour.
     private let apiKey = "DEMO_KEY"
     private let baseURL = "https://api.nal.usda.gov/fdc/v1"
     private let session: URLSession = {

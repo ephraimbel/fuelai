@@ -10,31 +10,48 @@ final class CameraService: NSObject, ObservableObject {
     private let output = AVCapturePhotoOutput()
     private var continuation: CheckedContinuation<UIImage, Error>?
 
+    private var isConfigured = false
+
     func configure() {
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
-              let input = try? AVCaptureDeviceInput(device: device) else { return }
+        guard !isConfigured else { return }
+        isConfigured = true
 
-        session.beginConfiguration()
-        session.sessionPreset = .photo
+        let session = self.session
+        let output = self.output
 
-        if session.canAddInput(input) { session.addInput(input) }
-        if session.canAddOutput(output) { session.addOutput(output) }
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+                  let input = try? AVCaptureDeviceInput(device: device) else { return }
 
-        session.commitConfiguration()
-        isReady = true
+            session.beginConfiguration()
+            session.sessionPreset = .photo
+
+            if session.canAddInput(input) { session.addInput(input) }
+            if session.canAddOutput(output) { session.addOutput(output) }
+
+            session.commitConfiguration()
+            session.startRunning()
+
+            DispatchQueue.main.async { [weak self] in
+                self?.isReady = true
+            }
+        }
     }
 
     func start() {
-        guard !session.isRunning else { return }
         DispatchQueue.global(qos: .userInitiated).async { [session] in
-            session.startRunning()
+            if !session.isRunning {
+                session.startRunning()
+            }
         }
     }
 
     func stop() {
-        guard session.isRunning else { return }
+        // Always dispatch stop — session may still be starting on background thread
         DispatchQueue.global(qos: .userInitiated).async { [session] in
-            session.stopRunning()
+            if session.isRunning {
+                session.stopRunning()
+            }
         }
     }
 

@@ -6,15 +6,18 @@ struct SexSelectionView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: FuelSpacing.sm) {
-                Text("What's your sex?")
+            VStack(spacing: FuelSpacing.sm) {
+                (Text("What's your ")
+                    .foregroundColor(FuelColors.ink) +
+                 Text("sex?")
+                    .foregroundColor(FuelColors.flame))
                     .font(FuelType.title)
-                    .foregroundStyle(FuelColors.ink)
                 Text("This helps us calculate your metabolism")
                     .font(FuelType.body)
                     .foregroundStyle(FuelColors.stone)
+                    .multilineTextAlignment(.center)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, FuelSpacing.xl)
             .padding(.top, FuelSpacing.lg)
             .staggeredAppear(index: 0)

@@ -30,17 +30,12 @@ struct StreakCalendarView: View {
             HStack(spacing: FuelSpacing.lg) {
                 // Current streak
                 HStack(spacing: FuelSpacing.sm) {
-                    ZStack {
-                        Circle()
-                            .fill(FuelColors.flame.opacity(0.12))
-                            .frame(width: 40, height: 40)
-
-                        Image(systemName: "flame.fill")
-                            .font(FuelType.iconMd)
-                            .foregroundStyle(FuelColors.flame)
-                            .scaleEffect(appeared ? 1.0 : 0.5)
-                            .animation(FuelAnimation.spring.delay(0.3), value: appeared)
-                    }
+                    Image("FlameIcon")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 36, height: 36)
+                        .scaleEffect(appeared ? 1.0 : 0.5)
+                        .animation(FuelAnimation.spring.delay(0.3), value: appeared)
 
                     VStack(alignment: .leading, spacing: 0) {
                         HStack(alignment: .firstTextBaseline, spacing: 2) {
@@ -148,13 +143,16 @@ struct StreakCalendarView: View {
             }
         }
         .padding(FuelSpacing.lg)
-        .background(FuelColors.cloud)
-        .clipShape(RoundedRectangle(cornerRadius: FuelRadius.card))
+        .fuelCard()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(streakAccessibilityLabel)
         .onAppear { triggerAnimation() }
         .onChange(of: period) { _, _ in
             tappedDate = nil
+            appeared = false
+            triggerAnimation()
+        }
+        .onChange(of: summaries.map(\.totalCalories)) { _, _ in
             appeared = false
             triggerAnimation()
         }

@@ -2,311 +2,459 @@ import SwiftUI
 
 struct SearchLogView: View {
     @Environment(AppState.self) private var appState
+    @Environment(SubscriptionService.self) private var subscriptionService
     let onSearch: (String, FoodItem?) -> Void
+    var onQuickLog: ((FoodItem) -> Void)? = nil
     @State private var query = ""
     @FocusState private var isFocused: Bool
 
-    private var frequentMeals: [(name: String, calories: Int, count: Int)] {
-        MealHistoryService.shared.topMeals(limit: 5)
-    }
-
-    private var suggestions: [(String, String)] {
-        let hour = Calendar.current.component(.hour, from: Date())
-        switch hour {
-        case 5..<11: // Breakfast
-            return [
-                ("sunrise.fill", "2 eggs with toast"),
-                ("cup.and.saucer.fill", "Oatmeal with banana"),
-                ("takeoutbag.and.cup.and.straw.fill", "Starbucks latte"),
-                ("frying.pan.fill", "Breakfast burrito"),
-                ("leaf.fill", "Greek yogurt with berries"),
-                ("bolt.fill", "Protein shake"),
-            ]
-        case 11..<14: // Lunch
-            return [
-                ("bird.fill", "Chicken breast 6oz"),
-                ("takeoutbag.and.cup.and.straw.fill", "Chipotle burrito bowl"),
-                ("fish.fill", "Salmon with rice"),
-                ("leaf.fill", "Caesar salad with chicken"),
-                ("flame.fill", "Turkey sandwich"),
-                ("cup.and.saucer.fill", "Soup and salad"),
-            ]
-        case 14..<17: // Afternoon snack
-            return [
-                ("leaf.fill", "Apple with peanut butter"),
-                ("bolt.fill", "Protein bar"),
-                ("cup.and.saucer.fill", "Trail mix handful"),
-                ("takeoutbag.and.cup.and.straw.fill", "Smoothie"),
-                ("flame.fill", "Rice cakes with hummus"),
-                ("star.fill", "Cottage cheese with fruit"),
-            ]
-        case 17..<21: // Dinner
-            return [
-                ("bird.fill", "Grilled chicken with vegetables"),
-                ("fish.fill", "Salmon with asparagus"),
-                ("frying.pan.fill", "Steak with sweet potato"),
-                ("takeoutbag.and.cup.and.straw.fill", "Pasta with marinara"),
-                ("flame.fill", "Stir fry with rice"),
-                ("leaf.fill", "Burrito bowl"),
-            ]
-        default: // Late night
-            return [
-                ("takeoutbag.and.cup.and.straw.fill", "Late night pizza slice"),
-                ("flame.fill", "Chips and guac"),
-                ("cup.and.saucer.fill", "Cereal and milk"),
-                ("star.fill", "Ice cream"),
-                ("leaf.fill", "PB&J sandwich"),
-                ("bolt.fill", "Protein shake"),
-            ]
-        }
-    }
-
-    private var suggestionsTitle: String {
-        let hour = Calendar.current.component(.hour, from: Date())
-        switch hour {
-        case 5..<11: return "Breakfast ideas"
-        case 11..<14: return "Lunch ideas"
-        case 14..<17: return "Snack ideas"
-        case 17..<21: return "Dinner ideas"
-        default: return "Late night ideas"
-        }
-    }
-
+    @State private var selectedCategory: QuickCategory = .popular
+    @State private var didSetInitialCategory = false
     @State private var debouncedQuery = ""
     @State private var debounceTask: Task<Void, Never>?
     @State private var cachedAutocomplete: [RetrievalResult] = []
+    @State private var usdaResults: [FoodItem] = []
+    @State private var isSearchingUSDA = false
+
+    private var frequentMeals: [(name: String, calories: Int, count: Int)] {
+        MealHistoryService.shared.topMeals(limit: 6)
+    }
+
+    private var recentMeals: [(name: String, calories: Int)] {
+        MealHistoryService.shared.recentMeals(limit: 8)
+    }
+
+    /// Pick the best default category based on time of day and what's already been logged.
+    private var smartDefaultCategory: QuickCategory {
+        let hour = Calendar.current.component(.hour, from: Date())
+        let todayCalories = appState.caloriesConsumed
+
+        // If nothing logged yet, suggest the current meal period
+        if todayCalories == 0 {
+            switch hour {
+            case 5..<11: return .breakfast
+            case 11..<15: return .lunch
+            case 15..<17: return .snacks
+            case 17..<22: return .dinner
+            default: return .snacks
+            }
+        }
+
+        // If something's been logged, suggest what's likely next
+        switch hour {
+        case 5..<11:
+            // Morning — suggest breakfast unless they already logged 300+ cal (probably had breakfast)
+            return todayCalories < 300 ? .breakfast : .snacks
+        case 11..<15:
+            // Midday — lunch unless they already have 800+ cal
+            return todayCalories < 800 ? .lunch : .snacks
+        case 15..<17:
+            return .snacks
+        case 17..<22:
+            return .dinner
+        default:
+            return .snacks
+        }
+    }
+
+    // MARK: - Quick Categories
+
+    private enum QuickCategory: String, CaseIterable {
+        case popular = "Popular"
+        case breakfast = "Breakfast"
+        case lunch = "Lunch"
+        case dinner = "Dinner"
+        case snacks = "Snacks"
+        case fastFood = "Fast Food"
+        case drinks = "Drinks"
+        case protein = "Protein"
+
+        var icon: String {
+            switch self {
+            case .popular: return "flame.fill"
+            case .breakfast: return "sunrise.fill"
+            case .lunch: return "sun.max.fill"
+            case .dinner: return "moon.stars.fill"
+            case .snacks: return "cup.and.saucer.fill"
+            case .fastFood: return "takeoutbag.and.cup.and.straw.fill"
+            case .drinks: return "mug.fill"
+            case .protein: return "bolt.fill"
+            }
+        }
+
+        var foods: [(name: String, cal: Int, emoji: String)] {
+            switch self {
+            case .popular:
+                return [
+                    ("Chicken breast (6oz)", 281, "🍗"),
+                    ("White rice (1 cup)", 206, "🍚"),
+                    ("2 eggs scrambled", 182, "🥚"),
+                    ("Banana", 105, "🍌"),
+                    ("Greek yogurt", 130, "🥛"),
+                    ("Salmon fillet (4oz)", 234, "🐟"),
+                    ("Avocado (half)", 161, "🥑"),
+                    ("Chicken salad bowl", 420, "🥗"),
+                    ("Protein shake", 160, "🥤"),
+                    ("Oatmeal with banana", 280, "🥣"),
+                    ("Turkey sandwich", 380, "🥪"),
+                    ("Sweet potato (medium)", 103, "🍠"),
+                ]
+            case .breakfast:
+                return [
+                    ("2 eggs scrambled", 182, "🥚"),
+                    ("Oatmeal with banana", 280, "🥣"),
+                    ("Greek yogurt with berries", 180, "🫐"),
+                    ("Avocado toast", 290, "🥑"),
+                    ("Breakfast burrito", 450, "🌯"),
+                    ("Protein pancakes (3)", 340, "🥞"),
+                    ("Overnight oats", 310, "🥣"),
+                    ("Bagel with cream cheese", 370, "🥯"),
+                    ("Smoothie bowl", 350, "🍓"),
+                    ("2 eggs with toast", 280, "🍳"),
+                    ("Fruit bowl", 180, "🍇"),
+                    ("Granola with milk", 320, "🥄"),
+                ]
+            case .lunch:
+                return [
+                    ("Chicken breast with rice", 487, "🍗"),
+                    ("Caesar salad with chicken", 440, "🥗"),
+                    ("Turkey sandwich", 380, "🥪"),
+                    ("Chipotle burrito bowl", 650, "🌯"),
+                    ("Salmon with vegetables", 380, "🐟"),
+                    ("Soup and salad", 350, "🥣"),
+                    ("Tuna salad wrap", 420, "🫔"),
+                    ("Grilled chicken wrap", 460, "🌯"),
+                    ("Poke bowl", 520, "🍣"),
+                    ("Mediterranean bowl", 480, "🥙"),
+                    ("BLT sandwich", 390, "🥓"),
+                    ("Cobb salad", 510, "🥗"),
+                ]
+            case .dinner:
+                return [
+                    ("Grilled chicken with vegetables", 380, "🍗"),
+                    ("Salmon with asparagus", 380, "🐟"),
+                    ("Steak with sweet potato", 580, "🥩"),
+                    ("Pasta with marinara", 440, "🍝"),
+                    ("Stir fry with rice", 520, "🥘"),
+                    ("Burrito bowl", 650, "🌯"),
+                    ("Grilled shrimp tacos (3)", 480, "🌮"),
+                    ("Chicken curry with rice", 580, "🍛"),
+                    ("Meatballs with pasta", 620, "🍝"),
+                    ("Teriyaki salmon bowl", 540, "🐟"),
+                    ("Stuffed bell peppers", 350, "🫑"),
+                    ("Lemon herb chicken thighs", 420, "🍗"),
+                ]
+            case .snacks:
+                return [
+                    ("Apple with peanut butter", 270, "🍎"),
+                    ("Protein bar", 220, "🍫"),
+                    ("Trail mix (1/4 cup)", 175, "🥜"),
+                    ("Hummus with veggies", 180, "🥕"),
+                    ("Rice cakes with almond butter", 200, "🍘"),
+                    ("Cottage cheese with fruit", 180, "🍑"),
+                    ("Hard boiled egg", 78, "🥚"),
+                    ("Banana with almond butter", 265, "🍌"),
+                    ("Cheese and crackers", 210, "🧀"),
+                    ("Edamame (1 cup)", 188, "🫛"),
+                    ("Dark chocolate (1oz)", 170, "🍫"),
+                    ("Mixed nuts (1oz)", 172, "🥜"),
+                ]
+            case .fastFood:
+                return [
+                    ("Big Mac", 563, "🍔"),
+                    ("Chick-fil-A sandwich", 440, "🐔"),
+                    ("Chipotle burrito", 1050, "🌯"),
+                    ("In-N-Out burger", 480, "🍔"),
+                    ("Subway 6\" turkey", 280, "🥪"),
+                    ("Chicken nuggets (10pc)", 410, "🐔"),
+                    ("French fries (medium)", 365, "🍟"),
+                    ("Pizza slice (pepperoni)", 313, "🍕"),
+                    ("Taco Bell crunchy taco", 170, "🌮"),
+                    ("Wendy's Dave's Single", 570, "🍔"),
+                    ("Panda Express orange chicken", 490, "🍊"),
+                    ("Five Guys cheeseburger", 840, "🍔"),
+                ]
+            case .drinks:
+                return [
+                    ("Black coffee", 5, "☕"),
+                    ("Starbucks latte (grande)", 190, "☕"),
+                    ("Protein shake", 160, "🥤"),
+                    ("Orange juice (8oz)", 112, "🍊"),
+                    ("Green smoothie", 180, "🥬"),
+                    ("Iced matcha latte", 200, "🍵"),
+                    ("Coca-Cola (12oz)", 140, "🥤"),
+                    ("Almond milk (8oz)", 30, "🥛"),
+                    ("Whole milk (8oz)", 149, "🥛"),
+                    ("Kombucha (12oz)", 60, "🍵"),
+                    ("Coconut water (11oz)", 45, "🥥"),
+                    ("Sports drink (20oz)", 140, "🥤"),
+                ]
+            case .protein:
+                return [
+                    ("Chicken breast (6oz)", 281, "🍗"),
+                    ("Salmon (4oz)", 234, "🐟"),
+                    ("Ground beef 90% lean (4oz)", 200, "🥩"),
+                    ("2 large eggs", 156, "🥚"),
+                    ("Turkey breast (4oz)", 153, "🦃"),
+                    ("Tuna (1 can)", 191, "🐟"),
+                    ("Shrimp (6oz)", 170, "🦐"),
+                    ("Tofu firm (1/2 block)", 183, "🧈"),
+                    ("Greek yogurt (1 cup)", 130, "🥛"),
+                    ("Cottage cheese (1 cup)", 206, "🧀"),
+                    ("Pork tenderloin (4oz)", 150, "🥩"),
+                    ("Protein powder (1 scoop)", 120, "🥤"),
+                ]
+            }
+        }
+    }
 
     var body: some View {
         ScrollView {
+            VStack(spacing: FuelSpacing.lg) {
+                // Remaining macros card
+                if appState.calorieTarget > 0 {
+                    remainingMacrosCard
+                }
+
+                // Search field
+                AISearchBar(
+                    query: $query,
+                    isFocused: $isFocused,
+                    isPremium: subscriptionService.isPremium,
+                    onSubmit: { submitSearch() },
+                    onClear: {
+                        query = ""
+                        usdaResults = []
+                    }
+                )
+                .padding(.horizontal, FuelSpacing.xl)
+
+                // Active search state
+                if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    searchActiveContent
+                } else {
+                    // Browse state
+                    browseContent
+                }
+
+                Spacer(minLength: FuelSpacing.section)
+            }
+            .padding(.top, FuelSpacing.lg)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .onAppear {
+            isFocused = true
+            if !didSetInitialCategory {
+                didSetInitialCategory = true
+                selectedCategory = smartDefaultCategory
+            }
+        }
+        .onChange(of: query) { _, newValue in
+            if newValue.count > 200 { query = String(newValue.prefix(200)); return }
+            debounceTask?.cancel()
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.count < 2 {
+                cachedAutocomplete = []
+                usdaResults = []
+                return
+            }
+            debounceTask = Task {
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled else { return }
+                // Local RAG search (instant)
+                let results = NutritionRAG.shared.retrieve(query: trimmed, topK: 8)
+                await MainActor.run { cachedAutocomplete = results }
+
+                // If local results are weak, search USDA in background
+                let bestScore = results.first?.score ?? 0
+                if bestScore < 5.0 && trimmed.count >= 3 {
+                    await MainActor.run { isSearchingUSDA = true }
+                    let usda = (try? await USDAFoodService.shared.search(query: trimmed, pageSize: 8)) ?? []
+                    guard !Task.isCancelled else { return }
+                    await MainActor.run {
+                        usdaResults = usda
+                        isSearchingUSDA = false
+                    }
+                } else {
+                    await MainActor.run { usdaResults = [] }
+                }
+            }
+        }
+    }
+
+    // MARK: - Remaining Macros Card
+
+    private var remainingMacrosCard: some View {
+        let isOver = appState.caloriesRemaining <= 0
+        return HStack(spacing: FuelSpacing.lg) {
+            VStack(spacing: 2) {
+                Text("\(abs(appState.caloriesRemaining))")
+                    .font(FuelType.stat)
+                    .foregroundStyle(isOver ? FuelColors.over : FuelColors.flame)
+                Text(isOver ? "cal over" : "cal left")
+                    .font(FuelType.micro)
+                    .foregroundStyle(FuelColors.stone)
+            }
+            Divider().frame(height: 28)
+            VStack(spacing: 2) {
+                Text("\(abs(Int(appState.proteinRemaining)))g")
+                    .font(FuelType.label)
+                    .foregroundStyle(appState.proteinRemaining < 0 ? FuelColors.over : FuelColors.protein)
+                Text("protein")
+                    .font(FuelType.micro)
+                    .foregroundStyle(FuelColors.stone)
+            }
+            VStack(spacing: 2) {
+                Text("\(abs(Int(appState.carbsRemaining)))g")
+                    .font(FuelType.label)
+                    .foregroundStyle(appState.carbsRemaining < 0 ? FuelColors.over : FuelColors.carbs)
+                Text("carbs")
+                    .font(FuelType.micro)
+                    .foregroundStyle(FuelColors.stone)
+            }
+            VStack(spacing: 2) {
+                Text("\(abs(Int(appState.fatRemaining)))g")
+                    .font(FuelType.label)
+                    .foregroundStyle(appState.fatRemaining < 0 ? FuelColors.over : FuelColors.fat)
+                Text("fat")
+                    .font(FuelType.micro)
+                    .foregroundStyle(FuelColors.stone)
+            }
+        }
+        .padding(.horizontal, FuelSpacing.lg)
+        .padding(.vertical, FuelSpacing.sm)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: FuelRadius.md)
+                .fill(isOver ? FuelColors.over.opacity(0.08) : FuelColors.cloud)
+        )
+        .padding(.horizontal, FuelSpacing.xl)
+    }
+
+    // MARK: - Search Active Content
+
+    private var searchActiveContent: some View {
         VStack(spacing: FuelSpacing.lg) {
-            // Remaining macros card
-            if appState.calorieTarget > 0 {
-                let isOver = appState.caloriesRemaining <= 0
-                HStack(spacing: FuelSpacing.lg) {
-                    VStack(spacing: 2) {
-                        Text("\(abs(appState.caloriesRemaining))")
-                            .font(FuelType.stat)
-                            .foregroundStyle(isOver ? FuelColors.over : FuelColors.flame)
-                        Text(isOver ? "cal over" : "cal left")
-                            .font(FuelType.micro)
-                            .foregroundStyle(FuelColors.stone)
-                    }
-                    Divider().frame(height: 28)
-                    VStack(spacing: 2) {
-                        Text("\(abs(Int(appState.proteinRemaining)))g")
-                            .font(FuelType.label)
-                            .foregroundStyle(appState.proteinRemaining < 0 ? FuelColors.over : FuelColors.protein)
-                        Text("protein")
-                            .font(FuelType.micro)
-                            .foregroundStyle(FuelColors.stone)
-                    }
-                    VStack(spacing: 2) {
-                        Text("\(abs(Int(appState.carbsRemaining)))g")
-                            .font(FuelType.label)
-                            .foregroundStyle(appState.carbsRemaining < 0 ? FuelColors.over : FuelColors.carbs)
-                        Text("carbs")
-                            .font(FuelType.micro)
-                            .foregroundStyle(FuelColors.stone)
-                    }
-                    VStack(spacing: 2) {
-                        Text("\(abs(Int(appState.fatRemaining)))g")
-                            .font(FuelType.label)
-                            .foregroundStyle(appState.fatRemaining < 0 ? FuelColors.over : FuelColors.fat)
-                        Text("fat")
-                            .font(FuelType.micro)
-                            .foregroundStyle(FuelColors.stone)
+            // Combined autocomplete results (local + USDA)
+            let localMatches = cachedAutocomplete.filter { $0.score >= 2.0 }
+            let allResults = mergedSearchResults(local: localMatches, usda: usdaResults)
+
+            if !allResults.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(Array(allResults.prefix(8).enumerated()), id: \.offset) { index, item in
+                        Button {
+                            isFocused = false
+                            FuelHaptics.shared.tap()
+                            onSearch(item.name, item.food)
+                        } label: {
+                            searchResultRow(item: item)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("\(item.name), \(item.calories) calories")
+                        if index < min(allResults.count, 8) - 1 {
+                            Divider().padding(.leading, FuelSpacing.lg + 20 + FuelSpacing.md)
+                        }
                     }
                 }
-                .padding(.horizontal, FuelSpacing.lg)
-                .padding(.vertical, FuelSpacing.sm)
-                .frame(maxWidth: .infinity)
                 .background(
                     RoundedRectangle(cornerRadius: FuelRadius.md)
-                        .fill(isOver ? FuelColors.over.opacity(0.08) : FuelColors.cloud)
+                        .fill(FuelColors.white)
+                        .shadow(color: FuelColors.shadow.opacity(0.08), radius: 8, y: 4)
                 )
                 .padding(.horizontal, FuelSpacing.xl)
             }
 
-            // Search field
-            HStack(spacing: FuelSpacing.sm) {
-                Image(systemName: "magnifyingglass")
-                    .font(FuelType.cardTitle)
-                    .foregroundStyle(FuelColors.stone)
-
-                TextField("What did you eat?", text: $query)
-                    .font(FuelType.body)
-                    .foregroundStyle(FuelColors.ink)
-                    .submitLabel(.search)
-                    .focused($isFocused)
-                    .onSubmit { submitSearch() }
-
-                if !query.isEmpty {
-                    Button {
-                        query = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(FuelType.iconMd)
-                            .foregroundStyle(FuelColors.fog)
-                    }
+            if isSearchingUSDA {
+                HStack(spacing: FuelSpacing.sm) {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                    Text("Searching database...")
+                        .font(FuelType.micro)
+                        .foregroundStyle(FuelColors.stone)
                 }
             }
-            .padding(.horizontal, FuelSpacing.lg)
-            .padding(.vertical, FuelSpacing.md)
-            .background(FuelColors.cloud)
-            .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
-            .padding(.horizontal, FuelSpacing.xl)
 
-            // Search button + autocomplete when query is entered
-            if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                // Live autocomplete from local database
-                let matches = autocompleteResults
-                if !matches.isEmpty {
-                    VStack(spacing: 0) {
-                        ForEach(Array(matches.prefix(5).enumerated()), id: \.element.food.name) { index, result in
-                            Button {
-                                isFocused = false
-                                FuelHaptics.shared.tap()
-                                onSearch(result.food.name, result.food)
-                            } label: {
-                                HStack(spacing: FuelSpacing.md) {
-                                    Image(systemName: "magnifyingglass")
-                                        .font(FuelType.micro)
-                                        .foregroundStyle(FuelColors.fog)
-                                        .frame(width: 16)
+            // AI Analyze / Look up button
+            analyzeButton
+        }
+    }
 
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(result.food.name)
-                                            .font(FuelType.body)
-                                            .foregroundStyle(FuelColors.ink)
-                                            .lineLimit(1)
-                                        Text("\(result.food.calories) cal · \(result.food.serving)")
-                                            .font(FuelType.micro)
-                                            .foregroundStyle(FuelColors.stone)
-                                    }
+    // MARK: - Browse Content
 
-                                    Spacer()
-
-                                    Image(systemName: "arrow.up.left")
-                                        .font(FuelType.micro)
-                                        .foregroundStyle(FuelColors.fog)
-                                }
-                                .padding(.horizontal, FuelSpacing.lg)
-                                .padding(.vertical, FuelSpacing.sm)
-                            }
-                            if index < min(matches.count, 5) - 1 {
-                                Divider().padding(.leading, FuelSpacing.lg + 16 + FuelSpacing.md)
-                            }
-                        }
-                    }
-                    .background(
-                        RoundedRectangle(cornerRadius: FuelRadius.md)
-                            .fill(FuelColors.white)
-                            .shadow(color: FuelColors.shadow.opacity(0.08), radius: 8, y: 4)
-                    )
-                    .padding(.horizontal, FuelSpacing.xl)
-                }
-
-                Button { submitSearch() } label: {
+    private var browseContent: some View {
+        VStack(spacing: FuelSpacing.xl) {
+            // Upgrade nudge for free users
+            if !subscriptionService.isPremium {
+                Button {
+                    // Will be handled by existing paywall flow
+                } label: {
                     HStack(spacing: FuelSpacing.sm) {
                         Image(systemName: "sparkles")
-                            .font(FuelType.iconSm)
-                        Text("Analyze with AI")
-                            .font(FuelType.cardTitle)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(FuelColors.flame)
+                        Text("Upgrade to AI Search — describe any meal naturally")
+                            .font(FuelType.micro)
+                            .foregroundStyle(FuelColors.stone)
                     }
-                    .foregroundStyle(FuelColors.onDark)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, FuelSpacing.lg)
-                    .background(FuelColors.ink)
-                    .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
+                    .padding(.horizontal, FuelSpacing.lg)
+                    .padding(.vertical, FuelSpacing.sm)
+                    .background(
+                        Capsule()
+                            .fill(FuelColors.flame.opacity(0.06))
+                    )
                 }
-                .pressable()
                 .padding(.horizontal, FuelSpacing.xl)
-                .accessibilityLabel("Analyze with AI")
-                .accessibilityHint("Sends your food description for AI-powered nutrition analysis")
             }
 
-            if query.isEmpty {
-                // Frequent meals from history
-                if !frequentMeals.isEmpty {
-                    VStack(alignment: .leading, spacing: FuelSpacing.sm) {
-                        Text("Your frequent meals")
-                            .font(FuelType.label)
-                            .foregroundStyle(FuelColors.stone)
+            // Recent meals
+            if !recentMeals.isEmpty {
+                recentMealsSection
+            }
 
-                        ForEach(Array(frequentMeals.enumerated()), id: \.offset) { index, meal in
-                            Button {
-                                isFocused = false
-                                FuelHaptics.shared.tap()
-                                let ragFood = NutritionRAG.shared.retrieve(query: meal.name, topK: 1).first(where: { $0.score >= 3.0 })?.food
-                                onSearch(meal.name, ragFood)
-                            } label: {
-                                HStack(spacing: FuelSpacing.md) {
-                                    Image(systemName: "clock.arrow.circlepath")
-                                        .font(FuelType.label)
-                                        .foregroundStyle(FuelColors.stone)
-                                        .frame(width: 20)
+            // Category chips
+            categoryChips
 
-                                    Text(meal.name)
-                                        .font(FuelType.body)
-                                        .foregroundStyle(FuelColors.ink)
+            // Category foods grid
+            categoryFoodsGrid
+        }
+    }
 
-                                    Spacer()
+    // MARK: - Recent Meals Section
 
-                                    Text("\(meal.calories) cal")
-                                        .font(FuelType.caption)
-                                        .foregroundStyle(FuelColors.stone)
+    private var recentMealsSection: some View {
+        VStack(alignment: .leading, spacing: FuelSpacing.sm) {
+            HStack {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(FuelType.iconXs)
+                    .foregroundStyle(FuelColors.stone)
+                Text("Recent")
+                    .font(FuelType.label)
+                    .foregroundStyle(FuelColors.stone)
+            }
+            .padding(.horizontal, FuelSpacing.xl)
 
-                                    Text("logged \(meal.count)x")
-                                        .font(FuelType.micro)
-                                        .foregroundStyle(FuelColors.fog)
-                                }
-                                .padding(.horizontal, FuelSpacing.lg)
-                                .padding(.vertical, FuelSpacing.md)
-                                .background(
-                                    RoundedRectangle(cornerRadius: FuelRadius.md)
-                                        .fill(FuelColors.cloud)
-                                )
-                            }
-                            .pressable()
-                            .staggeredAppear(index: index)
-                        }
-                    }
-                    .padding(.horizontal, FuelSpacing.xl)
-                }
-
-                // Suggestions
-                VStack(alignment: .leading, spacing: FuelSpacing.sm) {
-                    Text(suggestionsTitle)
-                        .font(FuelType.label)
-                        .foregroundStyle(FuelColors.stone)
-
-                    ForEach(Array(suggestions.enumerated()), id: \.offset) { index, suggestion in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: FuelSpacing.sm) {
+                    ForEach(Array(recentMeals.enumerated()), id: \.offset) { index, meal in
                         Button {
                             isFocused = false
                             FuelHaptics.shared.tap()
-                            let ragFood = NutritionRAG.shared.retrieve(query: suggestion.1, topK: 1).first(where: { $0.score >= 3.0 })?.food
-                            onSearch(suggestion.1, ragFood)
+                            let ragFood = NutritionRAG.shared.retrieve(query: meal.name, topK: 1).first(where: { $0.score >= 3.0 })?.food
+                            onSearch(meal.name, ragFood)
                         } label: {
-                            HStack(spacing: FuelSpacing.md) {
-                                Image(systemName: suggestion.0)
-                                    .font(FuelType.label)
-                                    .foregroundStyle(FuelColors.stone)
-                                    .frame(width: 20)
-
-                                Text(suggestion.1)
-                                    .font(FuelType.body)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(meal.name)
+                                    .font(FuelType.caption)
                                     .foregroundStyle(FuelColors.ink)
-
-                                Spacer()
-
-                                Image(systemName: "arrow.up.left")
+                                    .lineLimit(1)
+                                Text("\(meal.calories) cal")
                                     .font(FuelType.micro)
-                                    .foregroundStyle(FuelColors.fog)
+                                    .foregroundStyle(FuelColors.stone)
                             }
-                            .padding(.horizontal, FuelSpacing.lg)
-                            .padding(.vertical, FuelSpacing.md)
+                            .padding(.horizontal, FuelSpacing.md)
+                            .padding(.vertical, FuelSpacing.sm)
                             .background(
-                                RoundedRectangle(cornerRadius: FuelRadius.md)
+                                RoundedRectangle(cornerRadius: FuelRadius.sm)
                                     .fill(FuelColors.cloud)
                             )
                         }
@@ -316,32 +464,298 @@ struct SearchLogView: View {
                 }
                 .padding(.horizontal, FuelSpacing.xl)
             }
+        }
+    }
 
-            Spacer()
-        }
-        .padding(.top, FuelSpacing.lg)
-        }
-        .scrollDismissesKeyboard(.interactively)
-        .onAppear { isFocused = true }
-        .onChange(of: query) { _, newValue in
-            if newValue.count > 200 { query = String(newValue.prefix(200)); return }
-            debounceTask?.cancel()
-            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.count < 2 {
-                cachedAutocomplete = []
-                return
+    // MARK: - Category Chips
+
+    private var categoryChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: FuelSpacing.sm) {
+                ForEach(QuickCategory.allCases, id: \.rawValue) { category in
+                    Button {
+                        withAnimation(FuelAnimation.snappy) {
+                            selectedCategory = category
+                        }
+                        FuelHaptics.shared.tap()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: category.icon)
+                                .font(.system(size: 11, weight: .medium))
+                            Text(category.rawValue)
+                                .font(FuelType.label)
+                        }
+                        .foregroundStyle(selectedCategory == category ? FuelColors.onDark : FuelColors.ink)
+                        .padding(.horizontal, FuelSpacing.md)
+                        .padding(.vertical, FuelSpacing.sm)
+                        .background(
+                            Capsule()
+                                .fill(selectedCategory == category ? FuelColors.buttonFill : FuelColors.cloud)
+                        )
+                    }
+                    .pressable()
+                }
             }
-            debounceTask = Task {
-                try? await Task.sleep(for: .milliseconds(200))
-                guard !Task.isCancelled else { return }
-                let results = NutritionRAG.shared.retrieve(query: trimmed, topK: 5)
-                await MainActor.run { cachedAutocomplete = results }
+            .padding(.horizontal, FuelSpacing.xl)
+        }
+    }
+
+    // MARK: - Category Foods Grid
+
+    private var categoryFoodsGrid: some View {
+        VStack(spacing: FuelSpacing.sm) {
+            ForEach(Array(selectedCategory.foods.enumerated()), id: \.offset) { index, food in
+                Button {
+                    isFocused = false
+                    FuelHaptics.shared.tap()
+                    // Try RAG match first for instant results
+                    let ragFood = NutritionRAG.shared.retrieve(query: food.name, topK: 1).first(where: { $0.score >= 3.0 })?.food
+                    onSearch(food.name, ragFood)
+                } label: {
+                    HStack(spacing: FuelSpacing.md) {
+                        Text(food.emoji)
+                            .font(.system(size: 20))
+                            .frame(width: 28)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(food.name)
+                                .font(FuelType.body)
+                                .foregroundStyle(FuelColors.ink)
+                                .lineLimit(1)
+                        }
+
+                        Spacer()
+
+                        Text("\(food.cal) cal")
+                            .font(FuelType.label)
+                            .foregroundStyle(FuelColors.stone)
+                            .monospacedDigit()
+
+                        Image(systemName: "plus.circle.fill")
+                            .font(FuelType.iconSm)
+                            .foregroundStyle(FuelColors.flame.opacity(0.6))
+                    }
+                    .padding(.horizontal, FuelSpacing.lg)
+                    .padding(.vertical, FuelSpacing.md)
+                    .background(
+                        RoundedRectangle(cornerRadius: FuelRadius.sm)
+                            .fill(FuelColors.cloud)
+                    )
+                }
+                .pressable()
+                .staggeredAppear(index: index)
+            }
+        }
+        .padding(.horizontal, FuelSpacing.xl)
+        .id(selectedCategory) // Reset animation when category changes
+    }
+
+    // MARK: - Analyze Button
+
+    private var analyzeButton: some View {
+        Group {
+            if subscriptionService.isPremium {
+                // Premium: animated gradient border + glow button
+                TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { context in
+                    let t = context.date.timeIntervalSinceReferenceDate
+                    let phase = t.remainder(dividingBy: 4.0) / 4.0
+                    let shimmerX = phase * 1.4 - 0.2
+                    let glowPulse = 0.3 + 0.15 * sin(t * 2.0)
+
+                    Button { submitSearch() } label: {
+                        HStack(spacing: FuelSpacing.sm) {
+                            Image(systemName: "sparkles")
+                                .font(FuelType.iconSm)
+                                .foregroundStyle(FuelColors.flame)
+                            Text("Analyze with AI")
+                                .font(FuelType.cardTitle)
+                                .foregroundStyle(FuelColors.ink)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, FuelSpacing.lg)
+                        .background(FuelColors.white)
+                        .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: FuelRadius.md)
+                                .stroke(
+                                    LinearGradient(
+                                        colors: [
+                                            FuelColors.flame.opacity(0.35),
+                                            FuelColors.flame.opacity(0.6),
+                                            Color(hex: "#FF8040").opacity(0.5),
+                                            FuelColors.flame.opacity(0.35),
+                                        ],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    ),
+                                    lineWidth: 2
+                                )
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: FuelRadius.md)
+                                .stroke(
+                                    LinearGradient(
+                                        stops: [
+                                            .init(color: .clear, location: max(0, shimmerX - 0.12)),
+                                            .init(color: .white.opacity(0.6), location: shimmerX),
+                                            .init(color: .clear, location: min(1, shimmerX + 0.12)),
+                                        ],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    ),
+                                    lineWidth: 2
+                                )
+                        )
+                        .shadow(color: FuelColors.flame.opacity(glowPulse), radius: 12, y: 2)
+                        .shadow(color: Color(hex: "#FF8040").opacity(glowPulse * 0.5), radius: 20, y: 4)
+                    }
+                    .pressable()
+                    .accessibilityLabel("Analyze with AI")
+                    .accessibilityHint("Analyzes your food description for nutrition information")
+                }
+                .padding(.horizontal, FuelSpacing.xl)
+            } else {
+                Button { submitSearch() } label: {
+                    HStack(spacing: FuelSpacing.sm) {
+                        Image(systemName: "magnifyingglass")
+                            .font(FuelType.iconSm)
+                        Text("Look up nutrition")
+                            .font(FuelType.cardTitle)
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, FuelSpacing.lg)
+                    .background(FuelColors.buttonFill)
+                    .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
+                }
+                .pressable()
+                .padding(.horizontal, FuelSpacing.xl)
+                .accessibilityLabel("Look up nutrition")
+                .accessibilityHint("Analyzes your food description for nutrition information")
             }
         }
     }
 
-    private var autocompleteResults: [RetrievalResult] {
-        cachedAutocomplete
+    // MARK: - Search Result Row
+
+    private func searchResultRow(item: SearchResult, showQuickLog: Bool = true) -> some View {
+        HStack(spacing: FuelSpacing.md) {
+            Image(systemName: item.isUSDA ? "leaf.fill" : "magnifyingglass")
+                .font(FuelType.micro)
+                .foregroundStyle(item.isUSDA ? FuelColors.success : FuelColors.fog)
+                .frame(width: 20)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.name)
+                    .font(FuelType.body)
+                    .foregroundStyle(FuelColors.ink)
+                    .lineLimit(1)
+
+                HStack(spacing: FuelSpacing.sm) {
+                    Text("\(item.calories) cal")
+                        .font(FuelType.micro)
+                        .foregroundStyle(FuelColors.stone)
+
+                    if let p = item.protein {
+                        Text("P:\(Int(p))g")
+                            .font(FuelType.micro)
+                            .foregroundStyle(FuelColors.protein)
+                    }
+                    if let c = item.carbs {
+                        Text("C:\(Int(c))g")
+                            .font(FuelType.micro)
+                            .foregroundStyle(FuelColors.carbs)
+                    }
+                    if let f = item.fat {
+                        Text("F:\(Int(f))g")
+                            .font(FuelType.micro)
+                            .foregroundStyle(FuelColors.fat)
+                    }
+                }
+            }
+
+            Spacer()
+
+            if let serving = item.serving {
+                Text(serving)
+                    .font(FuelType.micro)
+                    .foregroundStyle(FuelColors.fog)
+            }
+
+            // Quick-log button: tap to log at default serving instantly
+            if showQuickLog, let food = item.food, onQuickLog != nil {
+                Button {
+                    FuelHaptics.shared.tap()
+                    onQuickLog?(food)
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 22, weight: .medium))
+                        .foregroundStyle(FuelColors.flame)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Quick log \(item.name)")
+            } else {
+                Image(systemName: "arrow.up.left")
+                    .font(FuelType.micro)
+                    .foregroundStyle(FuelColors.fog)
+            }
+        }
+        .padding(.horizontal, FuelSpacing.lg)
+        .padding(.vertical, FuelSpacing.sm)
+    }
+
+    // MARK: - Helpers
+
+    private struct SearchResult {
+        let name: String
+        let calories: Int
+        let protein: Double?
+        let carbs: Double?
+        let fat: Double?
+        let serving: String?
+        let food: FoodItem?
+        let isUSDA: Bool
+    }
+
+    private func mergedSearchResults(local: [RetrievalResult], usda: [FoodItem]) -> [SearchResult] {
+        var results: [SearchResult] = []
+        var seenNames: Set<String> = []
+
+        // Local RAG results first (higher confidence, instant)
+        for result in local {
+            let key = result.food.name.lowercased()
+            guard !seenNames.contains(key) else { continue }
+            seenNames.insert(key)
+            results.append(SearchResult(
+                name: result.food.name,
+                calories: result.food.calories,
+                protein: result.food.protein,
+                carbs: result.food.carbs,
+                fat: result.food.fat,
+                serving: result.food.serving,
+                food: result.food,
+                isUSDA: false
+            ))
+        }
+
+        // USDA results (deduplicated)
+        for food in usda {
+            let key = food.name.lowercased()
+            guard !seenNames.contains(key) else { continue }
+            seenNames.insert(key)
+            results.append(SearchResult(
+                name: food.name,
+                calories: food.calories,
+                protein: food.protein,
+                carbs: food.carbs,
+                fat: food.fat,
+                serving: food.serving,
+                food: food,
+                isUSDA: true
+            ))
+        }
+
+        return results
     }
 
     private func submitSearch() {
@@ -350,5 +764,88 @@ struct SearchLogView: View {
         isFocused = false
         FuelHaptics.shared.tap()
         onSearch(text, nil)
+    }
+}
+
+// MARK: - AI Search Bar
+
+private struct AISearchBar: View {
+    @Binding var query: String
+    var isFocused: FocusState<Bool>.Binding
+    let isPremium: Bool
+    let onSubmit: () -> Void
+    let onClear: () -> Void
+
+    var body: some View {
+        if isPremium {
+            // Premium: animated gradient border
+            TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { context in
+                let t = context.date.timeIntervalSinceReferenceDate
+                let phase = t.remainder(dividingBy: 4.0) / 4.0
+                let shimmerX = phase * 1.4 - 0.2
+
+                searchField(placeholder: "Describe what you ate...")
+                    .overlay(
+                        RoundedRectangle(cornerRadius: FuelRadius.md)
+                            .stroke(
+                                LinearGradient(
+                                    colors: [
+                                        FuelColors.flame.opacity(0.25),
+                                        FuelColors.flame.opacity(0.4),
+                                        Color(hex: "#FF8040").opacity(0.3),
+                                        FuelColors.flame.opacity(0.25),
+                                    ],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                ),
+                                lineWidth: 1.5
+                            )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: FuelRadius.md)
+                            .stroke(
+                                LinearGradient(
+                                    stops: [
+                                        .init(color: .clear, location: max(0, shimmerX - 0.1)),
+                                        .init(color: .white.opacity(0.3), location: shimmerX),
+                                        .init(color: .clear, location: min(1, shimmerX + 0.1)),
+                                    ],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                ),
+                                lineWidth: 1.5
+                            )
+                    )
+            }
+        } else {
+            searchField(placeholder: "Search food or describe a meal...")
+        }
+    }
+
+    private func searchField(placeholder: String) -> some View {
+        HStack(spacing: FuelSpacing.sm) {
+            Image(systemName: isPremium ? "sparkles" : "magnifyingglass")
+                .font(FuelType.cardTitle)
+                .foregroundStyle(isPremium ? FuelColors.flame : FuelColors.stone)
+
+            TextField(placeholder, text: $query)
+                .font(FuelType.body)
+                .foregroundStyle(FuelColors.ink)
+                .submitLabel(.search)
+                .focused(isFocused)
+                .onSubmit { onSubmit() }
+
+            if !query.isEmpty {
+                Button(action: onClear) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(FuelType.iconMd)
+                        .foregroundStyle(FuelColors.fog)
+                }
+            }
+        }
+        .padding(.horizontal, FuelSpacing.lg)
+        .padding(.vertical, FuelSpacing.md)
+        .background(FuelColors.cloud)
+        .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
     }
 }

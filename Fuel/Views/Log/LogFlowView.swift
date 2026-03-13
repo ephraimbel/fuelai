@@ -1,10 +1,13 @@
 import SwiftUI
 import StoreKit
+import Supabase
 
 struct LogFlowView: View {
     @Environment(AppState.self) private var appState
     @Environment(SubscriptionService.self) private var subscriptionService
     @Environment(\.dismiss) private var dismiss
+
+    var initialSearchQuery: String?
 
     @State private var analysisResult: FoodAnalysis?
     @State private var previewResult: FoodAnalysis?
@@ -19,6 +22,7 @@ struct LogFlowView: View {
     @State private var errorDismissTask: Task<Void, Never>?
     @State private var photoError: String?
     @State private var showingAIConsent = false
+    @State private var showingSignIn = false
 
     var body: some View {
         NavigationStack {
@@ -56,7 +60,7 @@ struct LogFlowView: View {
                         ZStack {
                             PhotoScanOverlay(imageData: imageData)
 
-                            // Error overlay on photo — retry without jumping back to camera
+                            // Error overlay on photo — retry, retake, or search manually
                             if let photoErr = photoError {
                                 VStack(spacing: FuelSpacing.lg) {
                                     Spacer()
@@ -95,6 +99,22 @@ struct LogFlowView: View {
                                                     .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
                                             }
                                         }
+
+                                        // Fallback: search manually
+                                        Button {
+                                            withAnimation(FuelAnimation.smooth) {
+                                                capturedImageData = nil
+                                                photoError = nil
+                                                isAnalyzing = false
+                                                appState.selectedLogMode = .search
+                                            }
+                                        } label: {
+                                            Text("Search manually instead")
+                                                .font(.system(size: 14, weight: .medium))
+                                                .foregroundStyle(.white.opacity(0.7))
+                                                .underline()
+                                        }
+                                        .padding(.top, 4)
                                     }
                                     .padding(FuelSpacing.xl)
                                     .background(
@@ -144,15 +164,29 @@ struct LogFlowView: View {
                     VStack(spacing: 0) {
                         switch appState.selectedLogMode {
                         case .camera:
-                            CameraLogView(onCapture: analyzePhoto)
+                            CameraLogView(onCapture: analyzePhoto, onSwitchToBarcode: {
+                                withAnimation(FuelAnimation.snappy) {
+                                    appState.selectedLogMode = .barcode
+                                }
+                            })
                         case .search:
                             SearchLogView(onSearch: { query, exactFood in
                                 analyzeText(query, exactFood: exactFood)
+                            }, onQuickLog: { food in
+                                quickLogFood(food)
                             })
                         case .barcode:
-                            BarcodeLogView(onScan: analyzeBarcode)
+                            BarcodeLogView(onScan: analyzeBarcode, onSwitchToCamera: {
+                                withAnimation(FuelAnimation.snappy) {
+                                    appState.selectedLogMode = .camera
+                                }
+                            })
                         case .quickAdd:
                             QuickAddView(onLog: { analysis in logMeal(analysis) })
+                        case .savedMeals:
+                            SavedMealsView(onSelect: { analysis in
+                                withAnimation(FuelAnimation.smooth) { analysisResult = analysis }
+                            })
                         case .recentMeals:
                             RecentMealsView(onSelect: { analysis in
                                 withAnimation(FuelAnimation.smooth) { analysisResult = analysis }
@@ -174,22 +208,28 @@ struct LogFlowView: View {
                 // Success celebration overlay
                 if showingSuccess {
                     ZStack {
-                        FuelColors.shadow.opacity(0.3).ignoresSafeArea()
+                        Color.black.opacity(0.2)
+                            .ignoresSafeArea()
 
-                        VStack(spacing: FuelSpacing.lg) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(FuelType.hero)
+                        VStack(spacing: 16) {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 32, weight: .bold))
                                 .foregroundStyle(FuelColors.success)
-                                .symbolEffect(.bounce, value: showingSuccess)
+                                .frame(width: 64, height: 64)
+                                .background(
+                                    Circle()
+                                        .fill(FuelColors.success.opacity(0.12))
+                                )
 
-                            Text("Meal Logged!")
-                                .font(FuelType.title)
+                            Text("Logged")
+                                .font(.system(size: 20, weight: .semibold))
                                 .foregroundStyle(FuelColors.ink)
                         }
-                        .padding(FuelSpacing.xxl)
+                        .padding(32)
                         .background(
-                            RoundedRectangle(cornerRadius: FuelRadius.card)
+                            RoundedRectangle(cornerRadius: 20)
                                 .fill(FuelColors.white)
+                                .shadow(color: .black.opacity(0.08), radius: 16, y: 4)
                         )
 
                         ConfettiView()
@@ -216,9 +256,26 @@ struct LogFlowView: View {
                 logTask?.cancel()
                 errorDismissTask?.cancel()
             }
+            .task {
+                if let query = initialSearchQuery, !query.isEmpty {
+                    appState.selectedLogMode = .search
+                    // Small delay to let the view settle
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    analyzeText(query)
+                }
+            }
             .interactiveDismissDisabled(isLogging || isAnalyzing)
             .sheet(isPresented: $showingPaywall) {
                 UpgradePaywallView(reason: .scanLimit)
+            }
+            .sheet(isPresented: $showingSignIn) {
+                PaywallView {
+                    showingSignIn = false
+                    // Retry the photo scan now that we're signed in
+                    if let imageData = capturedImageData {
+                        analyzePhoto(imageData)
+                    }
+                }
             }
             .sheet(isPresented: $showingAIConsent) {
                 AIConsentView(
@@ -268,7 +325,10 @@ struct LogFlowView: View {
     }
 
     private var hideNavBar: Bool {
-        isAnalyzing && capturedImageData != nil && previewResult == nil
+        // Hide nav bar during photo scan AND on results page with photo (image bleeds to top)
+        if isAnalyzing && capturedImageData != nil && previewResult == nil { return true }
+        if analysisResult != nil && capturedImageData != nil { return true }
+        return false
     }
 
     // MARK: - State Reset
@@ -357,136 +417,164 @@ struct LogFlowView: View {
     private func analyzePhoto(_ imageData: Data, description: String? = nil) {
         guard checkRateLimit() else { return }
 
-        guard appState.aiService != nil else {
-            withAnimation { errorMessage = "AI service is loading. Please try again in a moment." }
-            return
-        }
-
-        // Validate image before starting analysis — check actual dimensions, not byte count
-        guard let validationImage = UIImage(data: imageData),
-              validationImage.size.width >= 100, validationImage.size.height >= 100 else {
-            withAnimation { errorMessage = "Image quality is very low. Please retake with better lighting." }
-            return
-        }
-
-        // Surface quality warnings to users so they can retake before waiting 20s
-        if let warning = ImageCompressor.qualityWarning(validationImage) {
-            #if DEBUG
-            print("[Fuel] Image quality warning: \(warning)")
-            #endif
-            // Don't block — just warn. Dark images are auto-enhanced, low-res may still work.
-        }
-
         capturedImageData = imageData
         isAnalyzing = true
         errorMessage = nil
         previewResult = nil
         photoError = nil
 
-        #if DEBUG
-        print("[Fuel] analyzePhoto: starting (imageData=\(imageData.count) bytes)")
-        #endif
-
         analysisTask?.cancel()
         analysisTask = Task {
             do {
-                await appState.aiService?.updateUserContext(
-                    caloriesRemaining: appState.caloriesRemaining,
-                    proteinRemaining: appState.proteinRemaining,
-                    carbsRemaining: appState.carbsRemaining,
-                    fatRemaining: appState.fatRemaining,
-                    goalType: appState.userProfile?.goalType?.rawValue ?? "maintain",
-                    dietStyle: appState.userProfile?.dietStyle?.rawValue ?? "standard"
-                )
+                // Downscale to 512px for faster upload — plenty for food recognition
+                let smallImage: Data
+                if let uiImage = UIImage(data: imageData),
+                   let resized = ImageCompressor.compress(uiImage, maxBytes: 300_000, quality: 0.5) {
+                    smallImage = resized
+                } else {
+                    smallImage = imageData
+                }
+                let base64 = smallImage.base64EncodedString()
 
-                let result = try await withAnalysisTimeout {
-                    guard let r = try await appState.aiService?.analyzePhoto(
-                        imageData: imageData,
-                        description: description,
-                        onItemsIdentified: nil
-                    ) else {
-                        throw FuelError.aiAnalysisFailed("AI service not available")
-                    }
-                    return r
+                #if DEBUG
+                print("[Fuel] analyzePhoto: original=\(imageData.count)B, compressed=\(smallImage.count)B, base64=\(base64.count) chars")
+                #endif
+
+                // All AI calls go through Supabase edge function (API key stays server-side)
+                let scanStart = ContinuousClock.now
+                let result = try await callEdgeFunction(base64: base64)
+
+                // Ensure scan animation shows for at least 2s (feels premium)
+                let elapsed = ContinuousClock.now - scanStart
+                if elapsed < .seconds(2) {
+                    try? await Task.sleep(for: .seconds(2) - elapsed)
                 }
 
                 #if DEBUG
                 print("[Fuel] analyzePhoto: SUCCESS — \(result.displayName) (\(result.totalCalories) cal)")
                 #endif
-                await MainActor.run {
-                    FuelHaptics.shared.logSuccess()
-                    withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
-                        analysisResult = result
-                        isAnalyzing = false
-                        errorMessage = nil
-                    }
+                FuelHaptics.shared.logSuccess()
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                    analysisResult = result
+                    isAnalyzing = false
+                    errorMessage = nil
                 }
             } catch is CancellationError {
-                #if DEBUG
-                print("[Fuel] analyzePhoto: CANCELLED")
-                #endif
-                await MainActor.run {
-                    withAnimation {
-                        capturedImageData = nil
-                        isAnalyzing = false
-                        photoError = nil
-                    }
+                withAnimation {
+                    capturedImageData = nil
+                    isAnalyzing = false
+                    photoError = nil
                 }
             } catch {
                 #if DEBUG
                 print("[Fuel] analyzePhoto: ERROR — \(error)")
+                // Extract body from FunctionsError for debugging
+                if case let FunctionsError.httpError(code, data) = error {
+                    let body = String(data: data, encoding: .utf8) ?? "no body"
+                    print("[Fuel] analyzePhoto: HTTP \(code) — \(body.prefix(300))")
+                }
                 #endif
 
                 let errorDetail: String
-                if let nutritionError = error as? NutritionError {
-                    switch nutritionError {
-                    case .missingAPIKey:
-                        errorDetail = "Unable to connect to AI. Please close and reopen the app."
-                    case .apiError(let code, _):
-                        errorDetail = code == 429 ? "Rate limited — please wait a moment." : "Server error (\(code)). Please try again."
-                    case .imageEncodingFailed:
-                        errorDetail = "Could not process image. Try a different photo."
-                    case .parseError:
-                        errorDetail = "Could not read AI response. Please try again."
-                    default:
-                        errorDetail = "Analysis failed. Please try again."
-                    }
-                } else if let fuelError = error as? FuelError {
-                    errorDetail = fuelError.localizedDescription
-                } else if let urlError = error as? URLError {
+                if let urlError = error as? URLError {
                     switch urlError.code {
                     case .timedOut:
                         errorDetail = "Request timed out. Please try again."
                     case .notConnectedToInternet, .networkConnectionLost:
-                        errorDetail = "No internet connection. Please check your network."
+                        errorDetail = "No internet connection."
                     default:
-                        errorDetail = "Network error. Please check your connection and try again."
+                        errorDetail = "Network error (\(urlError.code.rawValue))."
                     }
+                } else if case let FunctionsError.httpError(code, data) = error, code == 401 {
+                    let body = String(data: data, encoding: .utf8) ?? ""
+                    if body.contains("expired") {
+                        errorDetail = "Session expired. Please sign out and sign back in."
+                    } else {
+                        errorDetail = "Please sign in to scan food."
+                    }
+                    Task {
+                        _ = try? await Constants.supabase.auth.refreshSession()
+                    }
+                } else if case let FunctionsError.httpError(code, _) = error {
+                    errorDetail = "Server error (\(code)). Please try again."
                 } else {
+                    #if DEBUG
+                    errorDetail = "Analysis failed: \(error)"
+                    #else
                     errorDetail = "Analysis failed. Please try again."
+                    #endif
                 }
 
-                await MainActor.run {
-                    FuelHaptics.shared.error()
-                    withAnimation {
-                        photoError = errorDetail
-                    }
+                FuelHaptics.shared.error()
+                withAnimation {
+                    photoError = errorDetail
                 }
             }
         }
     }
 
+    // MARK: - Edge Function (API key stays server-side)
+
+    private func callEdgeFunction(base64: String) async throws -> FoodAnalysis {
+        // Get session — fresh, cached, or create anonymous on the fly
+        var accessToken: String?
+
+        if let session = try? await Constants.supabase.auth.session {
+            accessToken = session.accessToken
+        } else if let cached = Constants.supabase.auth.currentSession {
+            accessToken = cached.accessToken
+        } else {
+            // Last resort: create anonymous session on the fly
+            #if DEBUG
+            print("[Fuel] callEdgeFunction: no session — creating anonymous")
+            #endif
+            try? await Constants.supabase.auth.signInAnonymously()
+            accessToken = Constants.supabase.auth.currentSession?.accessToken
+        }
+
+        guard let token = accessToken else {
+            throw FunctionsError.httpError(code: 401, data: Data("Could not create session".utf8))
+        }
+
+        let authHeaders = ["Authorization": "Bearer \(token)"]
+
+        let responseData: Data = try await withThrowingTaskGroup(of: Data.self) { group in
+            group.addTask {
+                try await Constants.supabase.functions.invoke(
+                    "analyze-food",
+                    options: .init(
+                        headers: authHeaders,
+                        body: [
+                            "image": base64,
+                            "request_type": "photo"
+                        ] as [String: String]
+                    )
+                ) { data, _ in data }
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(30))
+                throw URLError(.timedOut)
+            }
+            guard let result = try await group.next() else {
+                throw URLError(.timedOut)
+            }
+            group.cancelAll()
+            return result
+        }
+
+        #if DEBUG
+        if let responseStr = String(data: responseData, encoding: .utf8) {
+            print("[Fuel] Edge function response: \(responseStr.prefix(200))")
+        }
+        #endif
+
+        return try JSONDecoder().decode(FoodAnalysis.self, from: responseData)
+    }
+
     // MARK: - Text Analysis
 
     private func analyzeText(_ query: String, exactFood: FoodItem? = nil) {
-        guard checkRateLimit() else { return }
-
-        guard appState.aiService != nil else {
-            withAnimation { errorMessage = "AI service is loading. Please try again in a moment." }
-            return
-        }
-
-        // If user tapped an exact food from autocomplete, use it directly — no AI needed
+        // If user tapped an exact food from autocomplete, use it directly — no AI, no rate limit needed
         if let food = exactFood {
             let result = buildPreviewFromFood(food)
             withAnimation(FuelAnimation.smooth) {
@@ -494,6 +582,24 @@ struct LogFlowView: View {
                 previewResult = nil
                 errorMessage = nil
             }
+            return
+        }
+
+        // Free users: local + free API search — no rate limit needed (costs $0)
+        // Premium users: AI search — check rate limit and consent
+        let isPremium = subscriptionService.isPremium
+        if isPremium {
+            guard checkRateLimit() else { return }
+        } else {
+            // Still require AI consent (Apple Guideline 5.1.2(i)) even for free API lookups
+            if !AIConsentManager.hasConsented {
+                showingAIConsent = true
+                return
+            }
+        }
+
+        guard appState.aiService != nil else {
+            withAnimation { errorMessage = "Service is loading. Please try again in a moment." }
             return
         }
 
@@ -510,7 +616,31 @@ struct LogFlowView: View {
             previewResult = nil
         }
 
-        // Full AI analysis in background
+        // Free users: local database + USDA + Open Food Facts (all free, no AI cost)
+        if !isPremium {
+            analysisTask?.cancel()
+            analysisTask = Task {
+                let localResult = await appState.aiService?.searchFoodLocal(query: query)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                        if let result = localResult {
+                            analysisResult = result
+                            previewResult = nil
+                        } else if let preview = ragPreview {
+                            analysisResult = preview
+                            previewResult = nil
+                        } else {
+                            errorMessage = "Couldn't find that food. Try a simpler name like \"chicken breast\" or \"banana\"."
+                        }
+                        isAnalyzing = false
+                    }
+                }
+            }
+            return
+        }
+
+        // Full AI analysis in background (premium users)
         // Capture preview for this specific query so fallback uses correct data
         let fallbackPreview = ragPreview
         analysisTask?.cancel()
@@ -568,7 +698,7 @@ struct LogFlowView: View {
                             analysisResult = preview
                             previewResult = nil
                             isAnalyzing = false
-                            errorMessage = "Using local estimate — AI analysis unavailable"
+                            errorMessage = nil
                         } else {
                             errorMessage = errorDetail
                             isAnalyzing = false
@@ -646,6 +776,7 @@ struct LogFlowView: View {
     }
 
     private func buildPreviewFromFood(_ food: FoodItem) -> FoodAnalysis {
+        let measurement = AIService.inferMeasurement(from: food)
         let item = AnalyzedFoodItem(
             id: UUID(),
             name: food.name,
@@ -653,8 +784,13 @@ struct LogFlowView: View {
             protein: food.protein,
             carbs: food.carbs,
             fat: food.fat,
+            fiber: food.fiber,
+            sugar: food.sugar,
             servingSize: food.serving,
-            confidence: 0.85,
+            estimatedGrams: food.servingGrams,
+            measurementUnit: measurement.unit,
+            measurementAmount: measurement.amount,
+            confidence: food.confidence == .high ? 0.9 : 0.75,
             note: nil
         )
         return FoodAnalysis(
@@ -670,10 +806,11 @@ struct LogFlowView: View {
             warnings: nil,
             healthInsight: nil,
             calorieRange: nil,
-            confidenceReason: "Quick estimate from local database",
+            confidenceReason: nil,
             servingAssumed: food.serving
         )
     }
+
 
     // MARK: - Save Favorite
 
@@ -689,6 +826,9 @@ struct LogFlowView: View {
                 carbs: item.carbs,
                 fat: item.fat,
                 servingSize: item.servingSize,
+                estimatedGrams: item.estimatedGrams,
+                measurementUnit: item.measurementUnit,
+                measurementAmount: item.measurementAmount,
                 quantity: item.quantity,
                 confidence: item.confidence
             )
@@ -718,12 +858,37 @@ struct LogFlowView: View {
         }
     }
 
+    // MARK: - Quick Log (instant, no results screen)
+
+    private func quickLogFood(_ food: FoodItem) {
+        let analysis = buildPreviewFromFood(food)
+        logMeal(analysis)
+    }
+
     // MARK: - Log Meal
 
     private func logMeal(_ analysis: FoodAnalysis) {
         guard !isLogging else { return }
-        guard let profile = appState.userProfile else {
-            withAnimation { errorMessage = "Please sign in to log meals." }
+
+        // Use existing profile, or create a local-only one for anonymous users
+        let profile: UserProfile
+        if let existing = appState.userProfile {
+            profile = existing
+        } else if let session = Constants.supabase.auth.currentSession {
+            // Anonymous user — create a temporary local profile
+            let anonProfile = UserProfile(
+                id: session.user.id,
+                isPremium: false,
+                streakCount: 0,
+                longestStreak: 0,
+                unitSystem: .imperial,
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+            appState.userProfile = anonProfile
+            profile = anonProfile
+        } else {
+            withAnimation { errorMessage = "Please try again." }
             return
         }
         isLogging = true
@@ -741,7 +906,12 @@ struct LogFlowView: View {
                 protein: item.protein,
                 carbs: item.carbs,
                 fat: item.fat,
+                fiber: item.fiber,
+                sugar: item.sugar,
                 servingSize: item.servingSize,
+                estimatedGrams: item.estimatedGrams,
+                measurementUnit: item.measurementUnit,
+                measurementAmount: item.measurementAmount,
                 quantity: item.quantity,
                 confidence: item.confidence
             )
@@ -755,6 +925,9 @@ struct LogFlowView: View {
             totalProtein: analysis.totalProtein,
             totalCarbs: analysis.totalCarbs,
             totalFat: analysis.totalFat,
+            totalFiber: analysis.fiberG ?? 0,
+            totalSugar: analysis.sugarG ?? 0,
+            totalSodium: analysis.sodiumMg ?? 0,
             imageUrl: nil,
             displayName: analysis.displayName,
             loggedDate: now.dateString,
@@ -762,21 +935,20 @@ struct LogFlowView: View {
             createdAt: now
         )
 
+        // Ensure we're viewing today so the new meal shows in the correct list
+        appState.selectedDate = Date()
+
         // Add meal to list immediately (visible behind sheet)
         appState.todayMeals.append(meal)
 
-        // Prepare updated summary but DON'T apply yet — delay until dismiss
-        // so the user SEES the ring animations fill on the home screen
-        var summary = appState.todaySummary ?? DailySummary(userId: profile.id, date: now.dateString)
-        summary.totalCalories += meal.totalCalories
-        summary.totalProtein += meal.totalProtein
-        summary.totalCarbs += meal.totalCarbs
-        summary.totalFat += meal.totalFat
-        summary.isOnTarget = Double(summary.totalCalories) <= Double(appState.calorieTarget) * 1.1
-
         // Record locally (always works, even offline)
         MealHistoryService.shared.recordMeal(name: meal.displayName, calories: meal.totalCalories)
-        RateLimiter.recordScan()
+
+        // Only count against scan limit for premium users (they use AI)
+        // Free users use local database + free APIs — no scan quota consumed
+        if subscriptionService.isPremium {
+            RateLimiter.recordScan()
+        }
 
         // Record user corrections for learning
         if let original = analysisResult {
@@ -798,22 +970,55 @@ struct LogFlowView: View {
             showingSuccess = true
         }
 
+        // Capture image data NOW before view dismisses (State vars die with the view)
+        let savedImageData = capturedImageData
+
+        // Save image to local cache immediately so MealCardView can show it
+        if let imgData = savedImageData {
+            let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("meal-images")
+            try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+            let localPath = cacheDir.appendingPathComponent("\(mealId.uuidString).jpg")
+            try? imgData.write(to: localPath)
+        }
+
         // Dismiss after celebration, then persist to DB in background
         logTask?.cancel()
         logTask = Task {
             try? await Task.sleep(for: .seconds(1.2))
             guard !Task.isCancelled else { return }
 
-            // Apply summary update AT dismiss — rings animate as sheet slides away
+            // Dismiss first, then update summary after sheet slides away
+            // so the user SEES the rings animate on the home screen
             await MainActor.run {
-                appState.todaySummary = summary
                 dismiss()
+            }
 
-                // Request App Store review at a moment of delight (after 5+ meals logged)
-                // System limits to 3 prompts per 365 days — safe to call often
+            // Wait for sheet dismiss animation to complete
+            try? await Task.sleep(for: .seconds(0.4))
+
+            await MainActor.run {
+                // Now update the summary — rings animate with bounce + glow
+                // Re-derive from current todaySummary in case another meal was logged
+                // between when we captured `summary` and now
+                var freshSummary = appState.todaySummary ?? DailySummary(userId: profile.id, date: now.dateString)
+                freshSummary.totalCalories += meal.totalCalories
+                freshSummary.totalProtein += meal.totalProtein
+                freshSummary.totalCarbs += meal.totalCarbs
+                freshSummary.totalFat += meal.totalFat
+                freshSummary.totalFiber += meal.totalFiber
+                freshSummary.totalSugar += meal.totalSugar
+                freshSummary.totalSodium += meal.totalSodium
+                freshSummary.isOnTarget = Double(freshSummary.totalCalories) <= Double(appState.calorieTarget) * 1.1
+
+                withAnimation(.spring(response: 0.9, dampingFraction: 0.5)) {
+                    appState.todaySummary = freshSummary
+                }
+                appState.dataVersion += 1
+
                 let totalScans = UserDefaults.standard.integer(forKey: "lifetime_scan_count") + 1
                 UserDefaults.standard.set(totalScans, forKey: "lifetime_scan_count")
-                if totalScans == 5 || totalScans == 25 || totalScans == 100 {
+                if totalScans == 1 || totalScans == 5 || totalScans == 25 || totalScans == 100 {
                     if let scene = UIApplication.shared.connectedScenes
                         .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene {
                         SKStoreReviewController.requestReview(in: scene)
@@ -825,22 +1030,32 @@ struct LogFlowView: View {
             do {
                 try await appState.databaseService?.logMeal(meal)
 
-                // Upload image (best-effort)
-                if let imageData = capturedImageData {
-                    let _ = try? await appState.databaseService?.uploadMealImage(
-                        userId: profile.id, mealId: mealId, imageData: imageData
-                    )
-                    await MainActor.run { capturedImageData = nil }
-                }
-
-                // Sync summary to DB
+                // Sync summary to DB (don't recalculate from todayMeals — local state is authoritative)
+                appState.invalidateDateCache()
                 await appState.recalculateDailySummary()
+
+                // Upload image in background (non-blocking for charts)
+                if let imageData = savedImageData {
+                    #if DEBUG
+                    print("[Fuel] Uploading meal image (\(imageData.count) bytes)...")
+                    #endif
+                    if let url = try? await appState.databaseService?.uploadMealImage(
+                        userId: profile.id, mealId: mealId, imageData: imageData
+                    ) {
+                        #if DEBUG
+                        print("[Fuel] Image uploaded: \(url.prefix(80))...")
+                        #endif
+                        await MainActor.run {
+                            if let index = appState.todayMeals.firstIndex(where: { $0.id == mealId }) {
+                                appState.todayMeals[index].imageUrl = url
+                            }
+                        }
+                    }
+                }
             } catch {
                 #if DEBUG
                 print("[Fuel] Failed to save meal to database: \(error)")
                 #endif
-                // Meal is already in local state — user sees it immediately.
-                // It will sync on next refreshTodayData() call.
             }
         }
     }

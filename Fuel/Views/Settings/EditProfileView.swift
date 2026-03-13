@@ -9,7 +9,6 @@ struct EditProfileView: View {
     @State private var heightCm: Double = 175
     @State private var weightKg: Double = 75
     @State private var activityLevel: ActivityLevel = .moderate
-    @State private var showingSaveError = false
 
     private var isMetric: Bool {
         appState.userProfile?.unitSystem == .metric
@@ -110,8 +109,8 @@ struct EditProfileView: View {
             }
             .padding(FuelSpacing.xl)
         }
-        .background(FuelColors.white)
-        .navigationTitle("Body Stats")
+        .background(FuelColors.pageBackground)
+        .navigationTitle("Body & Activity")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
@@ -134,33 +133,40 @@ struct EditProfileView: View {
                 activityLevel = profile.activityLevel ?? .moderate
             }
         }
-        .alert("Couldn't Save", isPresented: $showingSaveError) {
-            Button("Try Again") { save() }
-            Button("Discard", role: .cancel) { dismiss() }
-        } message: {
-            Text("Your changes were saved locally but couldn't sync. Try again?")
-        }
     }
 
     private func save() {
-        if var profile = appState.userProfile {
-            profile.age = age
-            profile.sex = sex
-            profile.heightCm = heightCm
-            profile.weightKg = weightKg
-            profile.activityLevel = activityLevel
-            profile.updatedAt = Date()
-            appState.userProfile = profile
-            Task {
-                do {
-                    try await appState.databaseService?.updateProfile(profile)
-                    await MainActor.run { dismiss() }
-                } catch {
-                    await MainActor.run { showingSaveError = true }
-                }
-            }
-        } else {
+        guard var profile = appState.userProfile else {
             dismiss()
+            return
+        }
+        profile.age = age
+        profile.sex = sex
+        profile.heightCm = heightCm
+        profile.weightKg = weightKg
+        profile.activityLevel = activityLevel
+
+        // Recalculate calorie & macro targets based on updated body stats
+        let goal = profile.goalType ?? .maintain
+        let newCalories = CalorieCalculator.calculateTargetCalories(
+            weightKg: weightKg, heightCm: heightCm, age: age,
+            sex: sex, activityLevel: activityLevel, goalType: goal
+        )
+        let diet = profile.dietStyle ?? .standard
+        let newMacros = CalorieCalculator.calculateMacros(
+            targetCalories: newCalories, goalType: goal, weightKg: weightKg, dietStyle: diet
+        )
+        profile.targetCalories = newCalories
+        profile.targetProtein = newMacros.protein
+        profile.targetCarbs = newMacros.carbs
+        profile.targetFat = newMacros.fat
+
+        profile.updatedAt = Date()
+        appState.userProfile = profile
+        FuelHaptics.shared.tap()
+        dismiss()
+        Task {
+            try? await appState.databaseService?.updateProfile(profile)
         }
     }
 }

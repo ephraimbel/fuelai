@@ -20,6 +20,9 @@ actor DatabaseService {
             let totalProtein: Double
             let totalCarbs: Double
             let totalFat: Double
+            let totalFiber: Double
+            let totalSugar: Double
+            let totalSodium: Double
             let imageUrl: String?
             let loggedDate: String
             let loggedAt: Date
@@ -33,6 +36,9 @@ actor DatabaseService {
                 case totalProtein = "total_protein"
                 case totalCarbs = "total_carbs"
                 case totalFat = "total_fat"
+                case totalFiber = "total_fiber"
+                case totalSugar = "total_sugar"
+                case totalSodium = "total_sodium"
                 case imageUrl = "image_url"
                 case loggedDate = "logged_date"
                 case loggedAt = "logged_at"
@@ -48,6 +54,9 @@ actor DatabaseService {
             totalProtein: meal.totalProtein,
             totalCarbs: meal.totalCarbs,
             totalFat: meal.totalFat,
+            totalFiber: meal.totalFiber,
+            totalSugar: meal.totalSugar,
+            totalSodium: meal.totalSodium,
             imageUrl: meal.imageUrl,
             loggedDate: meal.loggedDate,
             loggedAt: meal.loggedAt,
@@ -65,15 +74,23 @@ actor DatabaseService {
             let protein: Double
             let carbs: Double
             let fat: Double
+            let fiber: Double
+            let sugar: Double
             let servingSize: String?
+            let estimatedGrams: Double
+            let measurementUnit: String
+            let measurementAmount: Double
             let quantity: Double
             let confidence: Double
 
             enum CodingKeys: String, CodingKey {
                 case id
                 case mealId = "meal_id"
-                case name, calories, protein, carbs, fat
+                case name, calories, protein, carbs, fat, fiber, sugar
                 case servingSize = "serving_size"
+                case estimatedGrams = "estimated_grams"
+                case measurementUnit = "measurement_unit"
+                case measurementAmount = "measurement_amount"
                 case quantity, confidence
             }
         }
@@ -87,7 +104,12 @@ actor DatabaseService {
                 protein: item.protein,
                 carbs: item.carbs,
                 fat: item.fat,
+                fiber: item.fiber,
+                sugar: item.sugar,
                 servingSize: item.servingSize,
+                estimatedGrams: item.estimatedGrams,
+                measurementUnit: item.measurementUnit,
+                measurementAmount: item.measurementAmount,
                 quantity: item.quantity,
                 confidence: item.confidence
             )
@@ -129,6 +151,46 @@ actor DatabaseService {
             .execute()
     }
 
+    func updateMealInPlace(_ meal: Meal) async throws {
+        struct MealUpdate: Codable {
+            let displayName: String
+            let totalCalories: Int
+            let totalProtein: Double
+            let totalCarbs: Double
+            let totalFat: Double
+            let totalFiber: Double
+            let totalSugar: Double
+            let totalSodium: Double
+
+            enum CodingKeys: String, CodingKey {
+                case displayName = "display_name"
+                case totalCalories = "total_calories"
+                case totalProtein = "total_protein"
+                case totalCarbs = "total_carbs"
+                case totalFat = "total_fat"
+                case totalFiber = "total_fiber"
+                case totalSugar = "total_sugar"
+                case totalSodium = "total_sodium"
+            }
+        }
+
+        let update = MealUpdate(
+            displayName: meal.displayName,
+            totalCalories: meal.totalCalories,
+            totalProtein: meal.totalProtein,
+            totalCarbs: meal.totalCarbs,
+            totalFat: meal.totalFat,
+            totalFiber: meal.totalFiber,
+            totalSugar: meal.totalSugar,
+            totalSodium: meal.totalSodium
+        )
+
+        try await supabase.from("meals")
+            .update(update)
+            .eq("id", value: meal.id.uuidString)
+            .execute()
+    }
+
     // MARK: - Daily Summary
 
     func getDailySummary(date: String, userId: UUID) async throws -> DailySummary? {
@@ -140,6 +202,9 @@ actor DatabaseService {
             let totalProtein: Double
             let totalCarbs: Double
             let totalFat: Double
+            let totalFiber: Double?
+            let totalSugar: Double?
+            let totalSodium: Double?
             let waterMl: Int
             let aiInsight: String?
             let isOnTarget: Bool
@@ -152,6 +217,9 @@ actor DatabaseService {
                 case totalProtein = "total_protein"
                 case totalCarbs = "total_carbs"
                 case totalFat = "total_fat"
+                case totalFiber = "total_fiber"
+                case totalSugar = "total_sugar"
+                case totalSodium = "total_sodium"
                 case waterMl = "water_ml"
                 case aiInsight = "ai_insight"
                 case isOnTarget = "is_on_target"
@@ -174,6 +242,9 @@ actor DatabaseService {
             totalProtein: row.totalProtein,
             totalCarbs: row.totalCarbs,
             totalFat: row.totalFat,
+            totalFiber: row.totalFiber ?? 0,
+            totalSugar: row.totalSugar ?? 0,
+            totalSodium: row.totalSodium ?? 0,
             meals: [],
             waterMl: row.waterMl,
             aiInsight: row.aiInsight,
@@ -190,6 +261,9 @@ actor DatabaseService {
             let totalProtein: Double
             let totalCarbs: Double
             let totalFat: Double
+            let totalFiber: Double
+            let totalSugar: Double
+            let totalSodium: Double
             let waterMl: Int
             let aiInsight: String?
             let isOnTarget: Bool
@@ -202,6 +276,9 @@ actor DatabaseService {
                 case totalProtein = "total_protein"
                 case totalCarbs = "total_carbs"
                 case totalFat = "total_fat"
+                case totalFiber = "total_fiber"
+                case totalSugar = "total_sugar"
+                case totalSodium = "total_sodium"
                 case waterMl = "water_ml"
                 case aiInsight = "ai_insight"
                 case isOnTarget = "is_on_target"
@@ -216,13 +293,16 @@ actor DatabaseService {
             totalProtein: summary.totalProtein,
             totalCarbs: summary.totalCarbs,
             totalFat: summary.totalFat,
+            totalFiber: summary.totalFiber,
+            totalSugar: summary.totalSugar,
+            totalSodium: summary.totalSodium,
             waterMl: summary.waterMl,
             aiInsight: summary.aiInsight,
             isOnTarget: summary.isOnTarget
         )
 
         try await supabase.from("daily_summaries")
-            .upsert(upsert)
+            .upsert(upsert, onConflict: "user_id,date")
             .execute()
     }
 
@@ -256,8 +336,8 @@ actor DatabaseService {
 
     // MARK: - Weight
 
-    func logWeight(userId: UUID, weightKg: Double) async throws {
-        let log = WeightLog(id: UUID(), userId: userId, weightKg: weightKg, loggedAt: Date())
+    func logWeight(userId: UUID, weightKg: Double, date: Date? = nil) async throws {
+        let log = WeightLog(id: UUID(), userId: userId, weightKg: weightKg, loggedAt: date ?? Date())
         try await supabase.from("weight_logs").insert(log).execute()
     }
 
@@ -314,6 +394,13 @@ actor DatabaseService {
             .execute()
     }
 
+    func deleteFavorite(id: UUID) async throws {
+        try await supabase.from("favorite_meals")
+            .delete()
+            .eq("id", value: id.uuidString)
+            .execute()
+    }
+
     // MARK: - Streaks
 
     func updateStreak(userId: UUID) async throws -> Int {
@@ -326,9 +413,70 @@ actor DatabaseService {
     // MARK: - Profile
 
     func updateProfile(_ profile: UserProfile) async throws {
+        struct ProfileUpdate: Codable {
+            let id: UUID
+            let displayName: String?
+            let age: Int?
+            let sex: Sex?
+            let heightCm: Double?
+            let weightKg: Double?
+            let activityLevel: ActivityLevel?
+            let goalType: GoalType?
+            let targetCalories: Int?
+            let targetProtein: Int?
+            let targetCarbs: Int?
+            let targetFat: Int?
+            let targetWeightKg: Double?
+            let dietStyle: DietStyle?
+            let mealsPerDay: Int?
+            let waterGoalMl: Int?
+            let unitSystem: UnitSystem
+            let updatedAt: Date
+
+            enum CodingKeys: String, CodingKey {
+                case id
+                case displayName = "display_name"
+                case age, sex
+                case heightCm = "height_cm"
+                case weightKg = "weight_kg"
+                case activityLevel = "activity_level"
+                case goalType = "goal_type"
+                case targetCalories = "target_calories"
+                case targetProtein = "target_protein"
+                case targetCarbs = "target_carbs"
+                case targetFat = "target_fat"
+                case targetWeightKg = "target_weight_kg"
+                case dietStyle = "diet_style"
+                case mealsPerDay = "meals_per_day"
+                case waterGoalMl = "water_goal_ml"
+                case unitSystem = "unit_system"
+                case updatedAt = "updated_at"
+            }
+        }
+
+        let update = ProfileUpdate(
+            id: profile.id,
+            displayName: profile.displayName,
+            age: profile.age,
+            sex: profile.sex,
+            heightCm: profile.heightCm,
+            weightKg: profile.weightKg,
+            activityLevel: profile.activityLevel,
+            goalType: profile.goalType,
+            targetCalories: profile.targetCalories,
+            targetProtein: profile.targetProtein,
+            targetCarbs: profile.targetCarbs,
+            targetFat: profile.targetFat,
+            targetWeightKg: profile.targetWeightKg,
+            dietStyle: profile.dietStyle,
+            mealsPerDay: profile.mealsPerDay,
+            waterGoalMl: profile.waterGoalMl,
+            unitSystem: profile.unitSystem,
+            updatedAt: profile.updatedAt
+        )
+
         try await supabase.from("profiles")
-            .update(profile)
-            .eq("id", value: profile.id.uuidString)
+            .upsert(update)
             .execute()
     }
 
@@ -346,6 +494,9 @@ actor DatabaseService {
             let totalProtein: Double
             let totalCarbs: Double
             let totalFat: Double
+            let totalFiber: Double?
+            let totalSugar: Double?
+            let totalSodium: Double?
             let waterMl: Int
             let aiInsight: String?
             let isOnTarget: Bool
@@ -358,6 +509,9 @@ actor DatabaseService {
                 case totalProtein = "total_protein"
                 case totalCarbs = "total_carbs"
                 case totalFat = "total_fat"
+                case totalFiber = "total_fiber"
+                case totalSugar = "total_sugar"
+                case totalSodium = "total_sodium"
                 case waterMl = "water_ml"
                 case aiInsight = "ai_insight"
                 case isOnTarget = "is_on_target"
@@ -381,6 +535,9 @@ actor DatabaseService {
                 totalProtein: row.totalProtein,
                 totalCarbs: row.totalCarbs,
                 totalFat: row.totalFat,
+                totalFiber: row.totalFiber ?? 0,
+                totalSugar: row.totalSugar ?? 0,
+                totalSodium: row.totalSodium ?? 0,
                 waterMl: row.waterMl,
                 aiInsight: row.aiInsight,
                 isOnTarget: row.isOnTarget
@@ -389,57 +546,7 @@ actor DatabaseService {
     }
 
     func getWeekSummaries(userId: UUID) async throws -> [DailySummary] {
-        guard let sevenDaysAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) else { return [] }
-        let dateString = sevenDaysAgo.dateString
-
-        struct SummaryRow: Codable {
-            let id: UUID
-            let userId: UUID
-            let date: String
-            let totalCalories: Int
-            let totalProtein: Double
-            let totalCarbs: Double
-            let totalFat: Double
-            let waterMl: Int
-            let aiInsight: String?
-            let isOnTarget: Bool
-
-            enum CodingKeys: String, CodingKey {
-                case id
-                case userId = "user_id"
-                case date
-                case totalCalories = "total_calories"
-                case totalProtein = "total_protein"
-                case totalCarbs = "total_carbs"
-                case totalFat = "total_fat"
-                case waterMl = "water_ml"
-                case aiInsight = "ai_insight"
-                case isOnTarget = "is_on_target"
-            }
-        }
-
-        let rows: [SummaryRow] = try await supabase.from("daily_summaries")
-            .select()
-            .eq("user_id", value: userId.uuidString)
-            .gte("date", value: dateString)
-            .order("date", ascending: true)
-            .execute()
-            .value
-
-        return rows.map { row in
-            DailySummary(
-                id: row.id,
-                userId: row.userId,
-                date: row.date,
-                totalCalories: row.totalCalories,
-                totalProtein: row.totalProtein,
-                totalCarbs: row.totalCarbs,
-                totalFat: row.totalFat,
-                waterMl: row.waterMl,
-                aiInsight: row.aiInsight,
-                isOnTarget: row.isOnTarget
-            )
-        }
+        try await getSummaries(userId: userId, days: 7)
     }
 
     // MARK: - Account

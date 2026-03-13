@@ -67,22 +67,7 @@ struct CalorieRingView: View {
                 .rotationEffect(.degrees(-90))
                 .shadow(color: ringColor.opacity(0.3), radius: 4, y: 2)
 
-            // Bright tip cap
-            if clampedProgress > 0.03 {
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [.white.opacity(0.9), ringColor],
-                            center: .center,
-                            startRadius: 0,
-                            endRadius: lineWidth * 0.8
-                        )
-                    )
-                    .frame(width: lineWidth, height: lineWidth)
-                    .shadow(color: ringColor.opacity(0.5), radius: 4)
-                    .offset(y: -size / 2)
-                    .rotationEffect(.degrees(360 * clampedProgress - 90))
-            }
+            // Tip cap removed — cleaner without it
         }
         .frame(width: size, height: size)
         .scaleEffect(ringScale)
@@ -105,7 +90,8 @@ struct CalorieRingView: View {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.4)) {
                 ringScale = 1.06
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 350_000_000)
                 withAnimation(.spring(response: 0.6, dampingFraction: 0.5)) {
                     ringScale = 1.0
                 }
@@ -115,7 +101,8 @@ struct CalorieRingView: View {
             withAnimation(.spring(response: 0.2, dampingFraction: 0.3).delay(0.05)) {
                 iconScale = 1.25
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 300_000_000)
                 withAnimation(.spring(response: 0.5, dampingFraction: 0.5)) {
                     iconScale = 1.0
                 }
@@ -125,7 +112,8 @@ struct CalorieRingView: View {
             withAnimation(.easeIn(duration: 0.25)) {
                 glowOpacity = 1.0
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 700_000_000)
                 withAnimation(.easeOut(duration: 1.0)) {
                     glowOpacity = 0
                 }

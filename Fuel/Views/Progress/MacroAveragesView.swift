@@ -30,12 +30,17 @@ struct MacroAveragesView: View {
                 .foregroundStyle(FuelColors.ink)
 
             if summaries.isEmpty {
-                VStack(spacing: FuelSpacing.sm) {
-                    Image(systemName: "chart.pie")
-                        .font(FuelType.title)
-                        .foregroundStyle(FuelColors.fog)
+                VStack(spacing: FuelSpacing.md) {
+                    // Ghost macro rings
+                    HStack(spacing: FuelSpacing.md) {
+                        ghostRing(color: FuelColors.protein, label: "Protein", progress: 0.3)
+                        ghostRing(color: FuelColors.carbs, label: "Carbs", progress: 0.5)
+                        ghostRing(color: FuelColors.fat, label: "Fat", progress: 0.2)
+                    }
+                    .opacity(0.4)
+
                     Text("Log meals to see macro averages")
-                        .font(FuelType.body)
+                        .font(FuelType.caption)
                         .foregroundStyle(FuelColors.stone)
                 }
                 .frame(maxWidth: .infinity, minHeight: 100)
@@ -72,13 +77,16 @@ struct MacroAveragesView: View {
             }
         }
         .padding(FuelSpacing.lg)
-        .background(FuelColors.cloud)
-        .clipShape(RoundedRectangle(cornerRadius: FuelRadius.card))
+        .fuelCard()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(macroAccessibilityLabel)
         .onAppear { triggerAnimation() }
         .onChange(of: period) { _, _ in
             selectedMacro = nil
+            appeared = false
+            triggerAnimation()
+        }
+        .onChange(of: summaries.map(\.totalProtein) + summaries.map(\.totalCarbs) + summaries.map(\.totalFat)) { _, _ in
             appeared = false
             triggerAnimation()
         }
@@ -98,6 +106,27 @@ struct MacroAveragesView: View {
         withAnimation(FuelAnimation.spring.delay(0.2)) {
             appeared = true
         }
+    }
+
+    private func ghostRing(color: Color, label: String, progress: CGFloat) -> some View {
+        VStack(spacing: FuelSpacing.sm) {
+            ZStack {
+                Circle()
+                    .stroke(color.opacity(0.08), lineWidth: 6)
+                Circle()
+                    .trim(from: 0, to: progress)
+                    .stroke(color.opacity(0.2), style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Text("—")
+                    .font(FuelType.caption)
+                    .foregroundStyle(FuelColors.fog)
+            }
+            .frame(width: 72, height: 72)
+            Text(label)
+                .font(FuelType.micro)
+                .foregroundStyle(color.opacity(0.5))
+        }
+        .frame(maxWidth: .infinity)
     }
 
     private func toggleMacro(_ macro: String) {

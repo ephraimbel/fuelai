@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AppState.self) private var appState
     @Environment(SubscriptionService.self) private var subscriptionService
+    @Environment(ThemeManager.self) private var themeManager
     @State private var showingEditGoals = false
     @State private var showingEditProfile = false
     @State private var showingSubscription = false
@@ -12,35 +13,45 @@ struct SettingsView: View {
     @State private var showingError = false
     @State private var errorMessage = ""
     @State private var showingHealthDisclaimer = false
+    @State private var showingNotifications = false
+    @State private var seedingData = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: FuelSpacing.lg) {
-                // Profile card
+                // Profile header
                 if let profile = appState.userProfile {
-                    VStack(spacing: FuelSpacing.sm) {
+                    HStack(spacing: FuelSpacing.md) {
                         ZStack {
                             Circle()
-                                .fill(FuelColors.mist)
-                                .frame(width: 56, height: 56)
+                                .fill(FuelColors.cloud)
+                                .frame(width: 44, height: 44)
 
-                            Text(initials(for: profile))
-                                .font(FuelType.iconLg)
-                                .foregroundStyle(FuelColors.ink)
+                            Image(systemName: "person.fill")
+                                .font(.system(size: 18))
+                                .foregroundStyle(FuelColors.stone)
                         }
 
-                        Text(profile.displayName ?? "Fuel User")
-                            .font(FuelType.section)
-                            .foregroundStyle(FuelColors.ink)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(profile.displayName ?? "Fuel User")
+                                .font(FuelType.cardTitle)
+                                .foregroundStyle(FuelColors.ink)
 
-                        Text(profile.email ?? "")
-                            .font(FuelType.caption)
-                            .foregroundStyle(FuelColors.stone)
+                            if let email = profile.email, !email.isEmpty {
+                                Text(email)
+                                    .font(FuelType.caption)
+                                    .foregroundStyle(FuelColors.stone)
+                            }
+                        }
+
+                        Spacer()
 
                         HStack(spacing: 4) {
                             if subscriptionService.isPremium {
-                                Image(systemName: "flame.fill")
-                                    .font(FuelType.badgeMicro)
+                                Image("FlameIcon")
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: 12, height: 12)
                             }
                             Text(subscriptionService.isPremium ? "Premium" : "Free")
                                 .font(FuelType.micro)
@@ -51,36 +62,40 @@ struct SettingsView: View {
                         .background(subscriptionService.isPremium ? FuelColors.flame : FuelColors.cloud)
                         .clipShape(Capsule())
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(FuelSpacing.xl)
-                    .background(FuelColors.cloud)
-                    .clipShape(RoundedRectangle(cornerRadius: FuelRadius.card))
+                    .padding(.vertical, FuelSpacing.sm)
                 }
 
-                // Goals
-                SettingsSection(title: "Goals") {
-                    SettingsRow(icon: "target", title: "Calorie & Macro Targets", detail: goalDetail) {
+                // My Plan
+                ProfileSection(title: "My Plan") {
+                    ProfileRow(icon: "FlameIcon", title: "Daily Target", detail: goalDetail) {
                         showingEditGoals = true
                     }
-                }
-
-                // Profile
-                SettingsSection(title: "Profile") {
-                    SettingsRow(icon: "person", title: "Body Stats", detail: bodyDetail) {
+                    ProfileRow(icon: "figure.stand", title: "Body & Activity", detail: bodyDetail) {
                         showingEditProfile = true
                     }
-                    SettingsRow(
+                    ProfileRow(
                         icon: "ruler",
                         title: "Units",
                         detail: appState.userProfile?.unitSystem == .metric ? "Metric" : "Imperial"
                     ) {
-                        toggleUnits()
+                        setUnit(appState.userProfile?.unitSystem == .imperial ? .metric : .imperial)
+                    }
+                }
+
+                // Notifications
+                ProfileSection(title: "Notifications") {
+                    ProfileRow(
+                        icon: "bell.fill",
+                        title: "Coach Notifications",
+                        detail: NotificationService.shared.isEnabled ? "On" : "Off"
+                    ) {
+                        showingNotifications = true
                     }
                 }
 
                 // Subscription
-                SettingsSection(title: "Subscription") {
-                    SettingsRow(
+                ProfileSection(title: "Subscription") {
+                    ProfileRow(
                         icon: "star",
                         title: subscriptionService.isPremium ? "Manage Subscription" : "Upgrade to fuel+",
                         detail: nil
@@ -90,29 +105,39 @@ struct SettingsView: View {
                 }
 
                 // About
-                SettingsSection(title: "About") {
-                    SettingsRow(icon: "heart.text.square", title: "Health & AI Disclaimers", detail: nil) {
+                ProfileSection(title: "About") {
+                    ProfileRow(icon: "heart.text.square", title: "Health & AI Info", detail: nil) {
                         showingHealthDisclaimer = true
                     }
-                    SettingsRow(icon: "doc.text", title: "Terms of Service", detail: nil) {
-                        if let url = URL(string: "https://fuel.app/terms") {
-                            UIApplication.shared.open(url)
-                        }
+                    ProfileRow(icon: "doc.text", title: "Terms of Service", detail: nil) {
+                        UIApplication.shared.open(Constants.termsURL)
                     }
-                    SettingsRow(icon: "lock.shield", title: "Privacy Policy", detail: nil) {
-                        if let url = URL(string: "https://fuel.app/privacy") {
-                            UIApplication.shared.open(url)
-                        }
+                    ProfileRow(icon: "lock.shield", title: "Privacy Policy", detail: nil) {
+                        UIApplication.shared.open(Constants.privacyURL)
                     }
-                    SettingsRow(icon: "info.circle", title: "Version", detail: appVersion, showChevron: false) {}
+                    ProfileRow(icon: "info.circle", title: "Version", detail: appVersion, showChevron: false) {}
                 }
 
                 // Account
-                SettingsSection(title: "Account") {
-                    SettingsRow(icon: "trash", title: "Delete Account", detail: nil) {
+                ProfileSection(title: "Account") {
+                    ProfileRow(icon: "trash", title: "Delete Account", detail: nil) {
                         showingDeleteAlert = true
                     }
                 }
+
+                #if DEBUG
+                // Debug section
+                ProfileSection(title: "Debug") {
+                    ProfileRow(icon: "photo.on.rectangle", title: seedingData ? "Seeding..." : "Seed Screenshot Data", detail: nil) {
+                        guard !seedingData else { return }
+                        seedingData = true
+                        Task {
+                            await appState.seedScreenshotData()
+                            seedingData = false
+                        }
+                    }
+                }
+                #endif
 
                 // Sign out
                 Button {
@@ -132,9 +157,16 @@ struct SettingsView: View {
             .padding(.horizontal, FuelSpacing.xl)
             .padding(.top, FuelSpacing.md)
         }
-        .background(FuelColors.white)
-        .navigationTitle("Settings")
+        .background(FuelColors.pageBackground)
+        .navigationTitle("Profile")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(FuelColors.pageBackground, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                themeToggle
+            }
+        }
         .sheet(isPresented: $showingEditGoals) {
             NavigationStack {
                 EditGoalsView()
@@ -207,6 +239,13 @@ struct SettingsView: View {
         } message: {
             Text("All your meals, progress, and settings will be permanently deleted.")
         }
+        .sheet(isPresented: $showingNotifications) {
+            NavigationStack {
+                NotificationSettingsView()
+            }
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+        }
         .sheet(isPresented: $showingHealthDisclaimer) {
             NavigationStack {
                 HealthDisclaimerView()
@@ -220,12 +259,41 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Theme Toggle
+
+    private var themeToggle: some View {
+        HStack(spacing: 0) {
+            ForEach(AppTheme.allCases, id: \.rawValue) { theme in
+                let selected = themeManager.theme == theme
+                Button {
+                    FuelHaptics.shared.selection()
+                    themeManager.setTheme(theme)
+                } label: {
+                    Image(systemName: theme.icon)
+                        .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                        .foregroundStyle(selected ? .white : FuelColors.stone)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            Circle()
+                                .fill(selected ? FuelColors.ink : Color.clear)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2)
+        .background(Capsule().fill(FuelColors.cloud))
+    }
+
     // MARK: - Helpers
 
     private var goalDetail: String? {
         guard let profile = appState.userProfile,
               let cal = profile.targetCalories else { return nil }
-        return "\(cal) cal"
+        let p = profile.targetProtein ?? 0
+        let c = profile.targetCarbs ?? 0
+        let f = profile.targetFat ?? 0
+        return "\(cal) cal · \(p)p · \(c)c · \(f)f"
     }
 
     private var bodyDetail: String? {
@@ -250,37 +318,25 @@ struct SettingsView: View {
         return "\(version) (\(build))"
     }
 
-    private func initials(for profile: UserProfile) -> String {
-        if let name = profile.displayName, !name.isEmpty {
-            let parts = name.split(separator: " ")
-            if parts.count >= 2 {
-                return String(parts[0].prefix(1) + parts[1].prefix(1)).uppercased()
-            }
-            return String(name.prefix(2)).uppercased()
-        }
-        return "FU"
-    }
-
-    private func toggleUnits() {
-        if var profile = appState.userProfile {
-            profile.unitSystem = profile.unitSystem == .imperial ? .metric : .imperial
-            appState.userProfile = profile
-            FuelHaptics.shared.tap()
-            Task {
-                do {
-                    try await appState.databaseService?.updateProfile(profile)
-                } catch {
-                    errorMessage = "Could not save unit preference."
-                    showingError = true
-                }
+    private func setUnit(_ unit: UnitSystem) {
+        guard var profile = appState.userProfile, profile.unitSystem != unit else { return }
+        profile.unitSystem = unit
+        appState.userProfile = profile
+        FuelHaptics.shared.tap()
+        Task {
+            do {
+                try await appState.databaseService?.updateProfile(profile)
+            } catch {
+                errorMessage = "Could not save unit preference."
+                showingError = true
             }
         }
     }
 }
 
-// MARK: - Settings Section
+// MARK: - Profile Section
 
-private struct SettingsSection<Content: View>: View {
+private struct ProfileSection<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
 
@@ -300,9 +356,9 @@ private struct SettingsSection<Content: View>: View {
     }
 }
 
-// MARK: - Settings Row
+// MARK: - Profile Row
 
-private struct SettingsRow: View {
+private struct ProfileRow: View {
     let icon: String
     let title: String
     var detail: String?
@@ -312,10 +368,19 @@ private struct SettingsRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: FuelSpacing.md) {
-                Image(systemName: icon)
-                    .font(FuelType.cardTitle)
-                    .foregroundStyle(FuelColors.ink)
-                    .frame(width: 24)
+                Group {
+                    if icon == "FlameIcon" {
+                        Image("FlameIcon")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 20, height: 20)
+                    } else {
+                        Image(systemName: icon)
+                            .font(FuelType.cardTitle)
+                            .foregroundStyle(FuelColors.ink)
+                    }
+                }
+                .frame(width: 24)
 
                 Text(title)
                     .font(FuelType.body)

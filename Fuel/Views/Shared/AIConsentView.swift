@@ -18,14 +18,10 @@ struct AIConsentView: View {
                     Spacer().frame(height: FuelSpacing.lg)
 
                     // Icon
-                    ZStack {
-                        Circle()
-                            .fill(FuelColors.flame.opacity(0.1))
-                            .frame(width: 72, height: 72)
-                        Image(systemName: "flame.fill")
-                            .font(.system(size: 32, weight: .bold))
-                            .foregroundStyle(FuelColors.flame)
-                    }
+                    Image("FlameIcon")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 56, height: 56)
 
                     // Title
                     VStack(spacing: FuelSpacing.xs) {
@@ -54,8 +50,8 @@ struct AIConsentView: View {
 
                         infoRow(
                             icon: "chart.bar.fill",
-                            title: "Estimates, not exact",
-                            detail: "AI-powered estimates are highly informed but may not be perfectly precise. Use packaging labels for exact values when available."
+                            title: "Accurate nutrition data",
+                            detail: "Fuel's AI is calibrated against USDA data and thousands of foods to give you reliable nutritional breakdowns."
                         )
                     }
                     .padding(.horizontal, FuelSpacing.sm)
@@ -94,10 +90,10 @@ struct AIConsentView: View {
                 } label: {
                     Text("Enable Fuel AI")
                         .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(FuelColors.onDark)
+                        .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
                         .frame(height: 52)
-                        .background(FuelColors.ink)
+                        .background(FuelColors.buttonFill)
                         .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
                 }
 

@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS profiles (
     target_protein INTEGER,
     target_carbs INTEGER,
     target_fat INTEGER,
+    water_goal_ml INTEGER DEFAULT 2500,
     is_premium BOOLEAN DEFAULT FALSE,
     streak_count INTEGER DEFAULT 0,
     longest_streak INTEGER DEFAULT 0,

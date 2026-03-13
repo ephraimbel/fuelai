@@ -10,14 +10,10 @@ struct DisclaimerAcknowledgmentView: View {
             Spacer()
 
             VStack(spacing: FuelSpacing.lg) {
-                ZStack {
-                    Circle()
-                        .fill(FuelColors.flame.opacity(0.1))
-                        .frame(width: 72, height: 72)
-                    Image(systemName: "flame.fill")
-                        .font(.system(size: 32, weight: .bold))
-                        .foregroundStyle(FuelColors.flame)
-                }
+                Image("FlameIcon")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 56, height: 56)
 
                 Text("Before you start")
                     .font(FuelType.title)
@@ -26,7 +22,7 @@ struct DisclaimerAcknowledgmentView: View {
                 VStack(spacing: FuelSpacing.lg) {
                     bulletPoint(
                         icon: "sparkles",
-                        text: "Fuel's AI analyzes your food photos and descriptions to estimate calories and nutrition. These are smart estimates and may vary from exact values."
+                        text: "Fuel's AI analyzes your food photos and descriptions to provide detailed calorie and nutrition breakdowns, calibrated against USDA data."
                     )
                     bulletPoint(
                         icon: "heart.text.square",

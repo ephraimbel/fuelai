@@ -48,7 +48,8 @@ struct LogPickerSheet: View {
             FuelHaptics.shared.tap()
             appState.selectedLogMode = mode
             dismiss()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 350_000_000)
                 appState.showingLogFlow = true
             }
         } label: {

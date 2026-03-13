@@ -4,6 +4,10 @@ struct ChatBubbleView: View {
     let message: ChatMessage
     let isLatestAssistant: Bool
     let onFinishTyping: (() -> Void)?
+    var onLogFood: ((String) -> Void)?
+    var onDirectLog: ((String, Int, Double, Double, Double) -> Void)?
+    var onApplyEdit: ((MealEditData) -> Void)?
+    var onLogWithAnalysis: ((FoodAnalysis) -> Void)?
 
     @State private var appeared = false
     @State private var showTimestamp = false
@@ -16,10 +20,14 @@ struct ChatBubbleView: View {
     private var isUser: Bool { message.role == .user }
     private var isTyping: Bool { isLatestAssistant && revealedCharacters < message.content.count }
 
-    init(message: ChatMessage, isLatestAssistant: Bool = false, onFinishTyping: (() -> Void)? = nil) {
+    init(message: ChatMessage, isLatestAssistant: Bool = false, onFinishTyping: (() -> Void)? = nil, onLogFood: ((String) -> Void)? = nil, onDirectLog: ((String, Int, Double, Double, Double) -> Void)? = nil, onApplyEdit: ((MealEditData) -> Void)? = nil, onLogWithAnalysis: ((FoodAnalysis) -> Void)? = nil) {
         self.message = message
         self.isLatestAssistant = isLatestAssistant
         self.onFinishTyping = onFinishTyping
+        self.onLogFood = onLogFood
+        self.onDirectLog = onDirectLog
+        self.onApplyEdit = onApplyEdit
+        self.onLogWithAnalysis = onLogWithAnalysis
     }
 
     var body: some View {
@@ -85,7 +93,7 @@ struct ChatBubbleView: View {
             .lineSpacing(3)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(FuelColors.ink)
+            .background(FuelColors.inkSurface)
             .clipShape(
                 UnevenRoundedRectangle(
                     topLeadingRadius: 18,
@@ -104,16 +112,11 @@ struct ChatBubbleView: View {
     private var assistantBubble: some View {
         HStack(alignment: .top, spacing: 10) {
             // Fuel avatar
-            ZStack {
-                Circle()
-                    .fill(FuelColors.flame.opacity(0.12))
-                    .frame(width: 28, height: 28)
-
-                Image(systemName: "flame.fill")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(FuelColors.flame)
-            }
-            .padding(.top, 2)
+            Image("FlameIcon")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 28, height: 28)
+                .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 8) {
                 // Message text
@@ -141,14 +144,14 @@ struct ChatBubbleView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(
-                    RoundedRectangle(cornerRadius: 18)
+                    RoundedRectangle(cornerRadius: FuelRadius.lg)
                         .fill(FuelColors.cloud)
                 )
 
                 // Cards
                 if let cards = message.cards, !cards.isEmpty, showCards {
                     ForEach(Array(cards.enumerated()), id: \.element.id) { index, card in
-                        ChatCardView(card: card)
+                        ChatCardView(card: card, onLogFood: onLogFood, onDirectLog: onDirectLog, onApplyEdit: onApplyEdit, onLogWithAnalysis: onLogWithAnalysis)
                             .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topLeading)))
                             .animation(
                                 .spring(response: 0.45, dampingFraction: 0.8).delay(Double(index) * 0.1),

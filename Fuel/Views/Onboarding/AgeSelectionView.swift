@@ -6,15 +6,20 @@ struct AgeSelectionView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: FuelSpacing.sm) {
-                Text("How old are you?")
+            VStack(spacing: FuelSpacing.sm) {
+                (Text("How ")
+                    .foregroundColor(FuelColors.ink) +
+                 Text("old ")
+                    .foregroundColor(FuelColors.flame) +
+                 Text("are you?")
+                    .foregroundColor(FuelColors.ink))
                     .font(FuelType.title)
-                    .foregroundStyle(FuelColors.ink)
                 Text("Age affects your daily calorie needs")
                     .font(FuelType.body)
                     .foregroundStyle(FuelColors.stone)
+                    .multilineTextAlignment(.center)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, FuelSpacing.xl)
             .padding(.top, FuelSpacing.lg)
             .staggeredAppear(index: 0)

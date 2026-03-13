@@ -10,15 +10,20 @@ struct HeightSelectionView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: FuelSpacing.sm) {
-                Text("How tall are you?")
+            VStack(spacing: FuelSpacing.sm) {
+                (Text("How ")
+                    .foregroundColor(FuelColors.ink) +
+                 Text("tall ")
+                    .foregroundColor(FuelColors.flame) +
+                 Text("are you?")
+                    .foregroundColor(FuelColors.ink))
                     .font(FuelType.title)
-                    .foregroundStyle(FuelColors.ink)
                 Text("Used to personalize your targets")
                     .font(FuelType.body)
                     .foregroundStyle(FuelColors.stone)
+                    .multilineTextAlignment(.center)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, FuelSpacing.xl)
             .padding(.top, FuelSpacing.lg)
             .staggeredAppear(index: 0)

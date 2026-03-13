@@ -8,8 +8,10 @@ struct EditGoalsView: View {
     @State private var targetProtein: Int = 150
     @State private var targetCarbs: Int = 250
     @State private var targetFat: Int = 55
+    @State private var waterGoalMl: Int = 2500
     @State private var goalType: GoalType = .maintain
-    @State private var showingSaveError = false
+
+    private var isMetric: Bool { appState.userProfile?.unitSystem == .metric }
 
     var body: some View {
         ScrollView {
@@ -91,13 +93,23 @@ struct EditGoalsView: View {
                     color: FuelColors.fat
                 )
 
+                // Water goal
+                MacroStepper(
+                    label: "Water Goal",
+                    value: $waterGoalMl,
+                    range: isMetric ? 1000...5000 : 34...170,
+                    step: isMetric ? 250 : 8,
+                    unit: isMetric ? "ml" : "oz",
+                    color: FuelColors.water
+                )
+
                 // Macro calorie breakdown
                 macroBreakdown
             }
             .padding(FuelSpacing.xl)
         }
-        .background(FuelColors.white)
-        .navigationTitle("Edit Goals")
+        .background(FuelColors.pageBackground)
+        .navigationTitle("Daily Target")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
@@ -118,16 +130,12 @@ struct EditGoalsView: View {
                 targetCarbs = profile.targetCarbs ?? 250
                 targetFat = profile.targetFat ?? 55
                 goalType = profile.goalType ?? .maintain
+                let goalMl = profile.waterGoalMl ?? Constants.defaultWaterGoalMl
+                waterGoalMl = isMetric ? goalMl : Int(round(Double(goalMl) / 29.5735))
             }
         }
         .onChange(of: goalType) { _, _ in
             recalculate()
-        }
-        .alert("Couldn't Save", isPresented: $showingSaveError) {
-            Button("Try Again") { save() }
-            Button("Discard", role: .cancel) { dismiss() }
-        } message: {
-            Text("Your changes were saved locally but couldn't sync. Try again?")
         }
     }
 
@@ -197,8 +205,9 @@ struct EditGoalsView: View {
             weightKg: weight, heightCm: height, age: age,
             sex: sex, activityLevel: activity, goalType: goalType
         )
+        let diet = profile.dietStyle ?? .standard
         let macros = CalorieCalculator.calculateMacros(
-            targetCalories: targetCalories, goalType: goalType, weightKg: weight
+            targetCalories: targetCalories, goalType: goalType, weightKg: weight, dietStyle: diet
         )
         targetProtein = macros.protein
         targetCarbs = macros.carbs
@@ -206,24 +215,22 @@ struct EditGoalsView: View {
     }
 
     private func save() {
-        if var profile = appState.userProfile {
-            profile.goalType = goalType
-            profile.targetCalories = targetCalories
-            profile.targetProtein = targetProtein
-            profile.targetCarbs = targetCarbs
-            profile.targetFat = targetFat
-            profile.updatedAt = Date()
-            appState.userProfile = profile
-            Task {
-                do {
-                    try await appState.databaseService?.updateProfile(profile)
-                    await MainActor.run { dismiss() }
-                } catch {
-                    await MainActor.run { showingSaveError = true }
-                }
-            }
-        } else {
+        guard var profile = appState.userProfile else {
             dismiss()
+            return
+        }
+        profile.goalType = goalType
+        profile.targetCalories = targetCalories
+        profile.targetProtein = targetProtein
+        profile.targetCarbs = targetCarbs
+        profile.targetFat = targetFat
+        profile.waterGoalMl = isMetric ? waterGoalMl : Int(Double(waterGoalMl) * 29.5735)
+        profile.updatedAt = Date()
+        appState.userProfile = profile
+        FuelHaptics.shared.tap()
+        dismiss()
+        Task {
+            try? await appState.databaseService?.updateProfile(profile)
         }
     }
 }

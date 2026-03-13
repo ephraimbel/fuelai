@@ -15,16 +15,10 @@ struct WelcomeView: View {
             Spacer().frame(height: FuelSpacing.section)
 
             // Logo + brand
-            HStack(spacing: 8) {
-                Image(systemName: "flame.fill")
-                    .font(.system(size: 32, weight: .medium))
-                    .foregroundStyle(FuelColors.flameGradient)
-
-                Text("fuel")
-                    .font(.system(size: 34, weight: .bold, design: .serif))
-                    .foregroundStyle(FuelColors.ink)
-                    .baselineOffset(-1)
-            }
+            Image("FuelLogo")
+                .resizable()
+                .scaledToFit()
+                .frame(height: 40)
             .opacity(appeared ? 1 : 0)
             .scaleEffect(appeared ? 1 : 0.9)
             .animation(FuelAnimation.spring.delay(0.1), value: appeared)

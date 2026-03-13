@@ -15,11 +15,16 @@ struct CalorieTargetView: View {
     let targetWeightKg: Double
     let dietStyle: DietStyle
     let mealsPerDay: Int
+    var unitSystem: UnitSystem = .imperial
     let onContinue: () -> Void
 
     @State private var displayedCalories: Int = 0
     @State private var showConfetti = false
     @State private var chartProgress: CGFloat = 0
+    @State private var timerTask: Task<Void, Never>?
+    @State private var countUpTask: Task<Void, Never>?
+
+    private var isMetric: Bool { unitSystem == .metric }
 
     private var tdee: Int {
         CalorieCalculator.calculateTDEE(
@@ -83,11 +88,16 @@ struct CalorieTargetView: View {
             )
             updateMacros()
             animateCountUp()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            timerTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 500_000_000)
                 showConfetti = true
                 FuelHaptics.shared.logSuccess()
                 FuelSounds.shared.celebration()
             }
+        }
+        .onDisappear {
+            timerTask?.cancel()
+            countUpTask?.cancel()
         }
     }
 
@@ -171,8 +181,9 @@ struct CalorieTargetView: View {
         let minW = allWeights.min() ?? 0
         let maxW = allWeights.max() ?? 0
         let range = maxW - minW
-        // Ensure at least 10 lbs of visible range so the curve always looks dramatic
-        let visibleRange = max(range, 10)
+        // Ensure enough visible range so the curve always looks dramatic
+        let minRange: Double = isMetric ? 5 : 10
+        let visibleRange = max(range, minRange)
         let mid = (minW + maxW) / 2
         let yMin = mid - visibleRange * 0.65
         let yMax = mid + visibleRange * 0.55
@@ -222,7 +233,7 @@ struct CalorieTargetView: View {
             }
 
             // Target dashed line
-            RuleMark(y: .value("Target", targetWeightKg * 2.20462))
+            RuleMark(y: .value("Target", displayWeight(targetWeightKg)))
                 .foregroundStyle(FuelColors.fog)
                 .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 3]))
                 .annotation(position: .trailing, alignment: .leading) {
@@ -343,7 +354,12 @@ struct CalorieTargetView: View {
     private var planSubtitle: String {
         switch goalType {
         case .lose:
-            return "A \(abs(deficit)) cal deficit to lose ~\(String(format: "%.1f", Double(abs(deficit)) * 7 / 7700))kg per week"
+            let weeklyKg = Double(abs(deficit)) * 7 / 7700
+            if isMetric {
+                return "A \(abs(deficit)) cal deficit to lose ~\(String(format: "%.1f", weeklyKg)) kg per week"
+            } else {
+                return "A \(abs(deficit)) cal deficit to lose ~\(String(format: "%.1f", weeklyKg * 2.20462)) lbs per week"
+            }
         case .toneUp:
             return "A moderate deficit to lean out while keeping muscle"
         case .maintain:
@@ -386,8 +402,11 @@ struct CalorieTargetView: View {
         let target = targetCalories
         let steps = 20
         let interval = 0.8 / Double(steps)
-        for i in 0...steps {
-            DispatchQueue.main.asyncAfter(deadline: .now() + interval * Double(i)) {
+        countUpTask = Task { @MainActor in
+            for i in 0...steps {
+                if i > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                }
                 withAnimation(FuelAnimation.quick) {
                     displayedCalories = Int(Double(target) * Double(i) / Double(steps))
                 }
@@ -411,26 +430,28 @@ struct CalorieTargetView: View {
         targetFat = macros.fat
     }
 
-    private func formattedWeight(_ kg: Double) -> String {
-        "\(Int(kg * 2.20462)) lbs"
+    private func displayWeight(_ kg: Double) -> Double {
+        isMetric ? kg : kg * 2.20462
     }
 
-    private func weightInLbs(_ kg: Double) -> Double {
-        Double(Int(kg * 2.20462))
+    private func formattedWeight(_ kg: Double) -> String {
+        if isMetric {
+            return "\(String(format: "%.1f", kg)) kg"
+        } else {
+            return "\(Int(kg * 2.20462)) lbs"
+        }
     }
 
     private func projectedWeightData() -> [(date: Date, weight: Double)] {
-        let startLbs = weightKg * 2.20462
-        let targetLbs = targetWeightKg * 2.20462
-        let diffLbs = targetLbs - startLbs
+        let startDisplay = displayWeight(weightKg)
+        let targetDisplay = displayWeight(targetWeightKg)
+        let diffDisplay = targetDisplay - startDisplay
         let calendar = Calendar.current
         let now = Date()
 
-        // Calculate how many weeks to reach goal
         let weeklyChange = CalorieCalculator.weeklyChangeKg(calorieDeficit: deficit)
         let rawWeeks = CalorieCalculator.weeksToGoal(currentKg: weightKg, targetKg: targetWeightKg, weeklyChangeKg: weeklyChange)
 
-        // Always show at least 16 weeks for a visually appealing curve
         let weeks = max(rawWeeks, 16)
         let numPoints = 7
         var points: [(date: Date, weight: Double)] = []
@@ -438,9 +459,8 @@ struct CalorieTargetView: View {
         for i in 0...numPoints {
             let t = Double(i) / Double(numPoints)
             let date = calendar.date(byAdding: .weekOfYear, value: Int(Double(weeks) * t), to: now) ?? now
-            // Ease-out curve: fast change early, slows down near target
             let eased = 1 - pow(1 - t, 2.2)
-            let weight = startLbs + diffLbs * eased
+            let weight = startDisplay + diffDisplay * eased
             points.append((date: date, weight: weight))
         }
 

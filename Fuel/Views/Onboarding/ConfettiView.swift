@@ -3,6 +3,7 @@ import SwiftUI
 struct ConfettiView: View {
     @State private var particles: [ConfettiParticle] = []
     @State private var isActive = false
+    @State private var timerTask: Task<Void, Never>?
 
     // Rich, warm celebration palette
     private let colors: [Color] = [
@@ -84,29 +85,27 @@ struct ConfettiView: View {
             spawnBurst(count: 60, spread: 1.0, yRange: -0.15...0.0, velocityRange: -220...(-60))
             isActive = true
 
-            // Second wave — wider, slightly delayed
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                spawnBurst(count: 40, spread: 1.2, yRange: -0.1...0.05, velocityRange: -180...(-30))
-            }
-
-            // Third wave — gentle shower
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                spawnBurst(count: 25, spread: 1.4, yRange: -0.2...(-0.05), velocityRange: -120...(-20))
-            }
-
-            // Side cannons — left
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            timerTask = Task { @MainActor in
+                // Side cannons — left & right (0.15s)
+                try? await Task.sleep(nanoseconds: 150_000_000)
                 spawnBurst(count: 20, spread: 0.3, centerX: 0.05, yRange: 0.2...0.4, velocityRange: -200...(-80), driftRange: 40...140)
-            }
-
-            // Side cannons — right
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                 spawnBurst(count: 20, spread: 0.3, centerX: 0.95, yRange: 0.2...0.4, velocityRange: -200...(-80), driftRange: -140...(-40))
-            }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5.5) {
+                // Second wave — wider, slightly delayed (0.3s total, so 0.15s more)
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                spawnBurst(count: 40, spread: 1.2, yRange: -0.1...0.05, velocityRange: -180...(-30))
+
+                // Third wave — gentle shower (0.8s total, so 0.5s more)
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                spawnBurst(count: 25, spread: 1.4, yRange: -0.2...(-0.05), velocityRange: -120...(-20))
+
+                // Deactivate (5.5s total, so 4.7s more)
+                try? await Task.sleep(nanoseconds: 4_700_000_000)
                 isActive = false
             }
+        }
+        .onDisappear {
+            timerTask?.cancel()
         }
     }
 

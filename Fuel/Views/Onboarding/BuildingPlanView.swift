@@ -9,12 +9,13 @@ struct BuildingPlanView: View {
     @State private var progress: CGFloat = 0
     @State private var checkTrim: [Int: CGFloat] = [:]
     @State private var showDone = false
+    @State private var sequenceTask: Task<Void, Never>?
 
     private let steps: [(icon: String, label: String, done: String)] = [
         ("person.text.rectangle", "Analyzing your profile", "Profile analyzed"),
         ("function", "Calculating your macros", "Macros calculated"),
         ("chart.bar.fill", "Optimizing meal plan", "Meal plan optimized"),
-        ("flame.fill", "Building your plan", "Plan ready"),
+        ("FlameIcon", "Building your plan", "Plan ready"),
     ]
 
     var body: some View {
@@ -69,6 +70,9 @@ struct BuildingPlanView: View {
             hasStarted = true
             runSequence()
         }
+        .onDisappear {
+            sequenceTask?.cancel()
+        }
     }
 
     // MARK: - Step Card
@@ -95,9 +99,18 @@ struct BuildingPlanView: View {
                         .fill(isActive ? FuelColors.flame.opacity(0.1) : FuelColors.cloud)
                         .frame(width: 32, height: 32)
 
-                    Image(systemName: icon)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(isActive ? FuelColors.flame : FuelColors.stone)
+                    Group {
+                        if icon == "FlameIcon" {
+                            Image("FlameIcon")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 16, height: 16)
+                        } else {
+                            Image(systemName: icon)
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(isActive ? FuelColors.flame : FuelColors.stone)
+                        }
+                    }
                 }
             }
             .animation(FuelAnimation.snappy, value: isCompleted)
@@ -148,20 +161,20 @@ struct BuildingPlanView: View {
             progress = 1.0
         }
 
-        for i in 0..<totalSteps {
-            let startTime = stepDuration * Double(i)
-
-            // Activate step
-            DispatchQueue.main.asyncAfter(deadline: .now() + startTime) {
+        sequenceTask = Task { @MainActor in
+            for i in 0..<totalSteps {
+                // Activate step
+                if i > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(stepDuration * 1_000_000_000))
+                }
                 withAnimation(FuelAnimation.spring) {
                     activeStep = i
                 }
                 FuelHaptics.shared.tap()
                 FuelSounds.shared.tick()
-            }
 
-            // Complete step
-            DispatchQueue.main.asyncAfter(deadline: .now() + startTime + stepDuration) {
+                // Complete step
+                try? await Task.sleep(nanoseconds: UInt64(stepDuration * 1_000_000_000))
                 withAnimation(FuelAnimation.snappy) {
                     completedSteps.insert(i)
                 }
@@ -172,10 +185,9 @@ struct BuildingPlanView: View {
                 FuelHaptics.shared.selection()
                 FuelSounds.shared.pop()
             }
-        }
 
-        // Final completion
-        DispatchQueue.main.asyncAfter(deadline: .now() + totalDuration + 0.2) {
+            // Final completion (0.2s after last step completes)
+            try? await Task.sleep(nanoseconds: 200_000_000)
             FuelHaptics.shared.logSuccess()
             FuelSounds.shared.chime()
             onContinue()

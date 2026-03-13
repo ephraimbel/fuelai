@@ -11,15 +11,10 @@ struct SubscriptionView: View {
                 Spacer()
 
                 VStack(spacing: FuelSpacing.lg) {
-                    ZStack {
-                        Circle()
-                            .fill(FuelColors.flame.opacity(0.1))
-                            .frame(width: 80, height: 80)
-
-                        Image(systemName: "flame.fill")
-                            .font(.system(size: 32, weight: .medium))
-                            .foregroundStyle(FuelColors.flame)
-                    }
+                    Image("FlameIcon")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 64, height: 64)
 
                     VStack(spacing: FuelSpacing.sm) {
                         HStack(spacing: 2) {
@@ -90,11 +85,10 @@ struct SubscriptionView: View {
                                     .foregroundStyle(FuelColors.ink)
                             }
                             .padding(FuelSpacing.lg)
-                            .background(FuelColors.cloud)
-                            .clipShape(RoundedRectangle(cornerRadius: FuelRadius.card))
-                            .overlay(
+                            .background(
                                 RoundedRectangle(cornerRadius: FuelRadius.card)
-                                    .stroke(FuelColors.mist, lineWidth: 0.5)
+                                    .fill(FuelColors.cardBackground)
+                                    .shadow(color: FuelColors.cardShadow, radius: 8, y: 3)
                             )
                         }
                     }
@@ -114,7 +108,7 @@ struct SubscriptionView: View {
             }
         }
         .padding(FuelSpacing.xl)
-        .background(FuelColors.white)
+        .background(FuelColors.pageBackground)
         .navigationTitle("Subscription")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

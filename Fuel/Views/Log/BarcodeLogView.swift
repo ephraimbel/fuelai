@@ -3,6 +3,7 @@ import SwiftUI
 
 struct BarcodeLogView: View {
     let onScan: (String) -> Void
+    var onSwitchToCamera: (() -> Void)? = nil
     @StateObject private var scanner = BarcodeScanner()
     @State private var hasScanned = false
     @State private var cameraPermission: AVAuthorizationStatus = .notDetermined
@@ -50,6 +51,24 @@ struct BarcodeLogView: View {
                         .padding(.top, FuelSpacing.md)
 
                     Spacer()
+
+                    // Switch to camera button
+                    if let onSwitchToCamera {
+                        Button {
+                            FuelHaptics.shared.tap()
+                            onSwitchToCamera()
+                        } label: {
+                            ZStack {
+                                Circle()
+                                    .fill(.ultraThinMaterial)
+                                    .frame(width: 52, height: 52)
+                                Image(systemName: "camera.fill")
+                                    .font(.system(size: 20, weight: .medium))
+                                    .foregroundStyle(FuelColors.onDark)
+                            }
+                        }
+                        .padding(.bottom, FuelSpacing.xxl + FuelSpacing.lg)
+                    }
                 }
                 .accessibilityLabel(hasScanned ? "Barcode detected" : "Barcode scanner active")
                 .accessibilityHint("Point camera at a barcode to scan it")
@@ -66,7 +85,6 @@ struct BarcodeLogView: View {
             cameraPermission = AVCaptureDevice.authorizationStatus(for: .video)
             if cameraPermission == .authorized && hasCamera {
                 scanner.configure()
-                scanner.start()
             } else if cameraPermission == .notDetermined {
                 requestPermission()
             }
@@ -88,7 +106,6 @@ struct BarcodeLogView: View {
                 cameraPermission = newStatus
                 if newStatus == .authorized && hasCamera {
                     scanner.configure()
-                    scanner.start()
                 }
             }
         }
@@ -146,10 +163,10 @@ struct BarcodeLogView: View {
             } label: {
                 Text("Open Settings")
                     .font(FuelType.cardTitle)
-                    .foregroundStyle(FuelColors.onDark)
+                    .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, FuelSpacing.lg)
-                    .background(FuelColors.ink)
+                    .background(FuelColors.buttonFill)
                     .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
             }
             .padding(.horizontal, FuelSpacing.xl)
@@ -164,7 +181,6 @@ struct BarcodeLogView: View {
                 cameraPermission = granted ? .authorized : .denied
                 if granted && hasCamera {
                     scanner.configure()
-                    scanner.start()
                 }
             }
         }

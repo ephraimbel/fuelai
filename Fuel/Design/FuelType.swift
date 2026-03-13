@@ -4,7 +4,7 @@ enum FuelType {
     // Serif headings (New York) — warm, editorial, CALORIQ-inspired
     static let hero = Font.system(size: 40, weight: .bold, design: .serif)
     static let title = Font.system(size: 28, weight: .bold, design: .serif)
-    static let stat = Font.system(size: 22, weight: .semibold, design: .serif)
+    static let stat = Font.system(size: 22, weight: .semibold, design: .serif).monospacedDigit()
     static let section = Font.system(size: 17, weight: .semibold, design: .serif)
 
     // Sans-serif body (SF Pro) — clean, readable
@@ -13,6 +13,11 @@ enum FuelType {
     static let label = Font.system(size: 13, weight: .medium, design: .default)
     static let caption = Font.system(size: 12, weight: .regular, design: .default)
     static let micro = Font.system(size: 11, weight: .medium, design: .default)
+
+    // Numeric variants — tabular digits prevent layout jitter on value changes
+    static let statNum = Font.system(size: 22, weight: .semibold, design: .serif).monospacedDigit()
+    static let labelNum = Font.system(size: 13, weight: .medium, design: .default).monospacedDigit()
+    static let microNum = Font.system(size: 11, weight: .medium, design: .default).monospacedDigit()
 
     // Icon tokens — consistent sizing for SF Symbols
     static let iconLg = Font.system(size: 20, weight: .semibold)

@@ -10,16 +10,15 @@ struct FuelTabBar: View {
 
             // Center FAB
             logButton
-                .padding(.horizontal, 4)
+                .frame(maxWidth: .infinity)
 
             tabButton(tab: .chat, icon: "bubble.left", activeIcon: "bubble.left.fill", label: "Coach")
-            tabButton(tab: .settings, icon: "gearshape", activeIcon: "gearshape.fill", label: "Settings")
+            tabButton(tab: .settings, icon: "person.crop.circle", activeIcon: "person.crop.circle.fill", label: "Profile")
         }
         .padding(.horizontal, FuelSpacing.sm)
-        .padding(.top, 8)
-        .padding(.bottom, 4)
+        .padding(.top, 4)
         .background(
-            FuelColors.white
+            FuelColors.pageBackground
                 .ignoresSafeArea(edges: .bottom)
         )
     }
@@ -28,24 +27,23 @@ struct FuelTabBar: View {
 
     private var logButton: some View {
         Button {
-            if appState.showingLogPicker {
-                appState.showingLogPicker = false
-            } else {
-                appState.showingLogPicker = true
-            }
             FuelHaptics.shared.tap()
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
+                appState.showingLogPicker.toggle()
+            }
         } label: {
             ZStack {
                 Circle()
-                    .fill(FuelColors.flame)
-                    .frame(width: 50, height: 50)
-                    .shadow(color: FuelColors.flame.opacity(0.25), radius: 8, y: 2)
+                    .fill(FuelColors.buttonFill)
+                    .frame(width: 52, height: 52)
+                    .shadow(color: FuelColors.buttonFill.opacity(0.25), radius: 8, y: 3)
 
                 Image(systemName: "plus")
-                    .font(.system(size: 20, weight: .bold))
+                    .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(.white)
                     .rotationEffect(.degrees(appState.showingLogPicker ? 45 : 0))
             }
+            .offset(y: -10)
         }
         .accessibilityLabel(appState.showingLogPicker ? "Close log menu" : "Log meal")
         .animation(FuelAnimation.snappy, value: appState.showingLogPicker)
@@ -63,17 +61,17 @@ struct FuelTabBar: View {
             }
             FuelHaptics.shared.selection()
         } label: {
-            VStack(spacing: 4) {
+            VStack(spacing: 1) {
                 Image(systemName: isSelected ? activeIcon : icon)
-                    .font(.system(size: 18, weight: isSelected ? .semibold : .regular))
-                    .frame(width: 24, height: 24)
+                    .font(.system(size: 16, weight: isSelected ? .medium : .regular))
+                    .frame(width: 22, height: 20)
 
                 Text(label)
-                    .font(.system(size: 10, weight: isSelected ? .semibold : .regular))
+                    .font(.system(size: 9, weight: isSelected ? .medium : .regular))
             }
-            .foregroundStyle(isSelected ? FuelColors.ink : FuelColors.stone)
+            .foregroundStyle(isSelected ? FuelColors.ink : FuelColors.fog)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 4)
+            .padding(.vertical, 1)
             .contentShape(Rectangle())
             .animation(FuelAnimation.snappy, value: isSelected)
         }

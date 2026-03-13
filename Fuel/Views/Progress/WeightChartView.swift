@@ -4,10 +4,18 @@ import Charts
 struct WeightChartView: View {
     let weights: [WeightLog]
     var period: TimePeriod = .week
+    var unitSystem: UnitSystem = .imperial
     let onAddWeight: () -> Void
 
     @State private var animatedWeights: [WeightLog] = []
     @State private var selectedWeight: WeightLog?
+
+    private var isMetric: Bool { unitSystem == .metric }
+    private var unitLabel: String { isMetric ? "kg" : "lbs" }
+
+    private func displayWeight(_ kg: Double) -> Double {
+        isMetric ? kg : kg * 2.20462
+    }
 
     private var weightChange: Double? {
         guard let first = weights.first, let last = weights.last, weights.count >= 2 else { return nil }
@@ -29,7 +37,7 @@ struct WeightChartView: View {
 
                     if let latest = latestWeight {
                         HStack(spacing: FuelSpacing.sm) {
-                            Text(String(format: "%.1f kg", latest))
+                            Text(String(format: "%.1f %@", displayWeight(latest), unitLabel))
                                 .font(FuelType.caption)
                                 .foregroundStyle(FuelColors.stone)
 
@@ -37,7 +45,7 @@ struct WeightChartView: View {
                                 HStack(spacing: 2) {
                                     Image(systemName: change > 0 ? "arrow.up.right" : change < 0 ? "arrow.down.right" : "arrow.right")
                                         .font(FuelType.badgeMicro)
-                                    Text(String(format: "%+.1f kg", change))
+                                    Text(String(format: "%+.1f %@", displayWeight(change), unitLabel))
                                         .font(FuelType.micro)
                                 }
                                 .foregroundStyle(change > 0 ? FuelColors.over : change < 0 ? FuelColors.success : FuelColors.stone)
@@ -58,7 +66,7 @@ struct WeightChartView: View {
                 // Selected point detail
                 if let selected = selectedWeight {
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(String(format: "%.1f", selected.weightKg))
+                        Text(String(format: "%.1f", displayWeight(selected.weightKg)))
                             .font(FuelType.stat)
                             .foregroundStyle(FuelColors.ink)
                         Text(selected.loggedAt, format: .dateTime.month(.abbreviated).day())
@@ -74,11 +82,11 @@ struct WeightChartView: View {
                             Text("Log")
                                 .font(FuelType.micro)
                         }
-                        .foregroundStyle(FuelColors.ink)
+                        .foregroundStyle(.white)
                         .padding(.horizontal, FuelSpacing.md)
                         .padding(.vertical, FuelSpacing.sm)
                         .background(
-                            Capsule().fill(FuelColors.onDark)
+                            Capsule().fill(FuelColors.buttonFill)
                         )
                     }
                     .pressable()
@@ -97,11 +105,11 @@ struct WeightChartView: View {
                         AreaMark(
                             x: .value("Date", log.loggedAt),
                             yStart: .value("Base", yAxisMin),
-                            yEnd: .value("Weight", log.weightKg)
+                            yEnd: .value("Weight", displayWeight(log.weightKg))
                         )
                         .foregroundStyle(
                             LinearGradient(
-                                colors: [FuelColors.ink.opacity(0.1), FuelColors.ink.opacity(0.01)],
+                                colors: [FuelColors.buttonFill.opacity(0.15), FuelColors.buttonFill.opacity(0.01)],
                                 startPoint: .top,
                                 endPoint: .bottom
                             )
@@ -113,9 +121,9 @@ struct WeightChartView: View {
                     ForEach(animatedWeights) { log in
                         LineMark(
                             x: .value("Date", log.loggedAt),
-                            y: .value("Weight", log.weightKg)
+                            y: .value("Weight", displayWeight(log.weightKg))
                         )
-                        .foregroundStyle(FuelColors.ink)
+                        .foregroundStyle(FuelColors.buttonFill)
                         .interpolationMethod(.catmullRom)
                         .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
                     }
@@ -124,16 +132,16 @@ struct WeightChartView: View {
                     ForEach(animatedWeights) { log in
                         PointMark(
                             x: .value("Date", log.loggedAt),
-                            y: .value("Weight", log.weightKg)
+                            y: .value("Weight", displayWeight(log.weightKg))
                         )
-                        .foregroundStyle(FuelColors.ink)
+                        .foregroundStyle(FuelColors.buttonFill)
                         .symbolSize(selectedWeight?.id == log.id ? 100 : 30)
                     }
 
                     // Selection line
                     if let selected = selectedWeight {
                         RuleMark(x: .value("Selected", selected.loggedAt))
-                            .foregroundStyle(FuelColors.ink.opacity(0.15))
+                            .foregroundStyle(FuelColors.flame.opacity(0.15))
                             .lineStyle(StrokeStyle(lineWidth: 1))
                     }
                 }
@@ -185,26 +193,27 @@ struct WeightChartView: View {
             }
         }
         .padding(FuelSpacing.lg)
-        .background(FuelColors.cloud)
-        .clipShape(RoundedRectangle(cornerRadius: FuelRadius.card))
+        .fuelCard()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(weightAccessibilityLabel)
         .accessibilityAction(named: "Log weight") { onAddWeight() }
         .onAppear { animateIn() }
         .onChange(of: weights.map(\.weightKg)) { _, _ in animateIn() }
+        .onChange(of: period) { _, _ in animateIn() }
     }
 
     private var weightAccessibilityLabel: String {
         if weights.isEmpty {
             return "Weight chart. No entries yet. Double tap to log your first weight."
         }
+        let unitName = isMetric ? "kilograms" : "pounds"
         var label = "Weight chart."
         if let latest = latestWeight {
-            label += " Latest weight \(String(format: "%.1f", latest)) kilograms."
+            label += " Latest weight \(String(format: "%.1f", displayWeight(latest))) \(unitName)."
         }
         if let change = weightChange {
             let direction = change > 0 ? "up" : "down"
-            label += " \(direction) \(String(format: "%.1f", abs(change))) kilograms over this period."
+            label += " \(direction) \(String(format: "%.1f", displayWeight(abs(change)))) \(unitName) over this period."
         }
         if weights.count == 1 {
             label += " Log another weight to see your trend."
@@ -215,13 +224,15 @@ struct WeightChartView: View {
     // MARK: - Y Axis
 
     private var yAxisMin: Double {
-        let min = weights.map(\.weightKg).min() ?? 60
-        return (min - 2).rounded(.down)
+        let min = weights.map { displayWeight($0.weightKg) }.min() ?? displayWeight(60)
+        let padding: Double = isMetric ? 2 : 5
+        return (min - padding).rounded(.down)
     }
 
     private var yAxisMax: Double {
-        let max = weights.map(\.weightKg).max() ?? 80
-        return (max + 2).rounded(.up)
+        let max = weights.map { displayWeight($0.weightKg) }.max() ?? displayWeight(80)
+        let padding: Double = isMetric ? 2 : 5
+        return (max + padding).rounded(.up)
     }
 
     // MARK: - Animation
@@ -248,7 +259,7 @@ struct WeightChartView: View {
             if let entry = weights.first {
                 HStack {
                     VStack(alignment: .leading, spacing: FuelSpacing.xs) {
-                        Text(String(format: "%.1f kg", entry.weightKg))
+                        Text(String(format: "%.1f %@", displayWeight(entry.weightKg), unitLabel))
                             .font(FuelType.stat)
                             .foregroundStyle(FuelColors.ink)
                         Text(entry.loggedAt, format: .dateTime.month(.abbreviated).day(.defaultDigits).year())
@@ -274,12 +285,27 @@ struct WeightChartView: View {
 
     private var emptyState: some View {
         VStack(spacing: FuelSpacing.md) {
-            Image(systemName: "scalemass")
-                .font(FuelType.title)
-                .foregroundStyle(FuelColors.fog)
+            // Ghost weight chart
+            ZStack {
+                // Ghost line — gentle downward trend
+                GhostWeightLine()
+                    .stroke(FuelColors.mist.opacity(0.4), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .frame(height: 80)
 
-            Text("No weight entries yet")
-                .font(FuelType.body)
+                // Ghost dots
+                HStack(spacing: 0) {
+                    ForEach(0..<5, id: \.self) { _ in
+                        Circle()
+                            .fill(FuelColors.mist.opacity(0.3))
+                            .frame(width: 6, height: 6)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+            }
+            .opacity(0.6)
+
+            Text("Track your weight over time")
+                .font(FuelType.caption)
                 .foregroundStyle(FuelColors.stone)
 
             Button(action: onAddWeight) {
@@ -289,11 +315,11 @@ struct WeightChartView: View {
                     Text("Log your first weight")
                         .font(FuelType.label)
                 }
-                .foregroundStyle(FuelColors.ink)
+                .foregroundStyle(.white)
                 .padding(.horizontal, FuelSpacing.lg)
                 .padding(.vertical, FuelSpacing.sm)
                 .background(
-                    Capsule().fill(FuelColors.onDark)
+                    Capsule().fill(FuelColors.buttonFill)
                 )
             }
             .pressable()
@@ -317,5 +343,22 @@ struct WeightChartView: View {
         case .month: return .dateTime.month(.abbreviated).day()
         case .threeMonth: return .dateTime.month(.abbreviated)
         }
+    }
+}
+
+// MARK: - Ghost Weight Line
+
+private struct GhostWeightLine: Shape {
+    func path(in rect: CGRect) -> Path {
+        let points: [CGFloat] = [0.3, 0.35, 0.25, 0.4, 0.5]
+        guard points.count > 1 else { return Path() }
+        var path = Path()
+        for (i, pct) in points.enumerated() {
+            let x = rect.width * CGFloat(i) / CGFloat(points.count - 1)
+            let y = rect.height * pct
+            if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
+            else { path.addLine(to: CGPoint(x: x, y: y)) }
+        }
+        return path
     }
 }

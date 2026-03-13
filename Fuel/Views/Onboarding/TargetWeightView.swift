@@ -11,15 +11,18 @@ struct TargetWeightView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: FuelSpacing.sm) {
-                Text(goalType == .maintain ? "What's your ideal weight?" : "What's your goal weight?")
+            VStack(spacing: FuelSpacing.sm) {
+                (Text("What's your ")
+                    .foregroundColor(FuelColors.ink) +
+                 Text(goalType == .maintain ? "ideal weight?" : "goal weight?")
+                    .foregroundColor(FuelColors.flame))
                     .font(FuelType.title)
-                    .foregroundStyle(FuelColors.ink)
                 Text(goalType == .maintain ? "We'll help you stay right on track" : "We'll build a plan to get you there")
                     .font(FuelType.body)
                     .foregroundStyle(FuelColors.stone)
+                    .multilineTextAlignment(.center)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, FuelSpacing.xl)
             .padding(.top, FuelSpacing.lg)
             .staggeredAppear(index: 0)

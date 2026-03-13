@@ -1,4 +1,5 @@
 import SwiftUI
+import StoreKit
 
 enum UpgradeReason {
     case scanLimit
@@ -28,8 +29,8 @@ struct UpgradePaywallView: View {
     let reason: UpgradeReason
 
     private let features: [(icon: String, title: String, subtitle: String)] = [
+        ("FlameIcon", "AI Nutrition Coach", "Personalized advice powered by AI"),
         ("camera.fill", "Unlimited Scans", "Snap and log meals without limits"),
-        ("bubble.left.and.bubble.right.fill", "Unlimited Chat", "Ask your AI nutritionist anything"),
         ("chart.bar.doc.horizontal.fill", "Weekly Reports", "AI-powered insights every week"),
         ("bolt.fill", "Priority Analysis", "Faster, more detailed food breakdowns"),
     ]
@@ -74,12 +75,21 @@ struct UpgradePaywallView: View {
             VStack(spacing: 0) {
                 ForEach(Array(features.enumerated()), id: \.offset) { index, feature in
                     HStack(spacing: FuelSpacing.md) {
-                        Image(systemName: feature.icon)
-                            .font(FuelType.iconMd)
-                            .foregroundStyle(FuelColors.flame)
-                            .frame(width: 36, height: 36)
-                            .background(FuelColors.flame.opacity(0.08))
-                            .clipShape(RoundedRectangle(cornerRadius: FuelRadius.sm))
+                        Group {
+                            if feature.icon == "FlameIcon" {
+                                Image("FlameIcon")
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: 20, height: 20)
+                            } else {
+                                Image(systemName: feature.icon)
+                                    .font(FuelType.iconMd)
+                                    .foregroundStyle(FuelColors.flame)
+                            }
+                        }
+                        .frame(width: 36, height: 36)
+                        .background(FuelColors.flame.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: FuelRadius.sm))
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text(feature.title)
@@ -110,18 +120,69 @@ struct UpgradePaywallView: View {
 
             // Plan cards
             VStack(spacing: FuelSpacing.sm) {
-                UpgradePlanCard(
-                    name: "Yearly",
-                    price: "$39.99/year",
-                    detail: "$3.33/mo",
-                    id: Constants.yearlyProductID,
-                    badge: "Save 80%",
-                    selected: $selectedPlan
-                )
+                // Yearly — hero card with free trial
+                Button {
+                    withAnimation(FuelAnimation.snappy) { selectedPlan = Constants.yearlyProductID }
+                    FuelHaptics.shared.tap()
+                } label: {
+                    let isSelected = selectedPlan == Constants.yearlyProductID
+                    VStack(spacing: 0) {
+                        // "BEST VALUE" top ribbon
+                        Text("BEST VALUE")
+                            .font(.system(size: 11, weight: .heavy))
+                            .foregroundStyle(FuelColors.onDark)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .background(FuelColors.buttonFill)
 
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: FuelSpacing.sm) {
+                                    Text("Yearly")
+                                        .font(.system(size: 18, weight: .bold))
+                                        .foregroundStyle(FuelColors.ink)
+                                    Text("Save 77%")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(FuelColors.onDark)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(FuelColors.buttonFill)
+                                        .clipShape(Capsule())
+                                }
+                                Text(yearlyPriceText)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(FuelColors.stone)
+                            }
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text(yearlyMonthlyPrice)
+                                    .font(.system(size: 20, weight: .bold, design: .serif))
+                                    .foregroundStyle(FuelColors.flame)
+                                Text("/mo")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(FuelColors.stone)
+                            }
+                        }
+                        .padding(FuelSpacing.lg)
+                    }
+                    .background(
+                        RoundedRectangle(cornerRadius: FuelRadius.card)
+                            .fill(FuelColors.white)
+                            .shadow(color: isSelected ? FuelColors.flame.opacity(0.25) : FuelColors.shadow.opacity(0.08), radius: isSelected ? 12 : 4, y: 2)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: FuelRadius.card)
+                            .stroke(isSelected ? FuelColors.flame : FuelColors.mist, lineWidth: isSelected ? 2 : 0.5)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: FuelRadius.card))
+                    .scaleEffect(isSelected ? 1.02 : 1.0)
+                    .animation(FuelAnimation.snappy, value: isSelected)
+                }
+
+                // Weekly — simple card
                 UpgradePlanCard(
                     name: "Weekly",
-                    price: "$3.99/week",
+                    price: weeklyPriceText,
                     id: Constants.weeklyProductID,
                     selected: $selectedPlan
                 )
@@ -139,15 +200,15 @@ struct UpgradePaywallView: View {
                     HStack(spacing: FuelSpacing.sm) {
                         if isPurchasing {
                             ProgressView()
-                                .tint(FuelColors.onDark)
+                                .tint(.white)
                         }
                         Text("Start Free Trial")
                             .font(.system(size: 17, weight: .semibold))
                     }
-                    .foregroundStyle(FuelColors.onDark)
+                    .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)
                     .frame(height: 52)
-                    .background(FuelColors.ink)
+                    .background(FuelColors.buttonFill)
                     .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
                 }
                 .disabled(isPurchasing)
@@ -172,9 +233,7 @@ struct UpgradePaywallView: View {
             // Legal links
             HStack(spacing: FuelSpacing.lg) {
                 Button {
-                    if let url = URL(string: "https://fuel.app/terms") {
-                        UIApplication.shared.open(url)
-                    }
+                    UIApplication.shared.open(Constants.termsURL)
                 } label: {
                     Text("Terms of Use")
                         .font(.system(size: 10))
@@ -182,9 +241,7 @@ struct UpgradePaywallView: View {
                         .underline()
                 }
                 Button {
-                    if let url = URL(string: "https://fuel.app/privacy") {
-                        UIApplication.shared.open(url)
-                    }
+                    UIApplication.shared.open(Constants.privacyURL)
                 } label: {
                     Text("Privacy Policy")
                         .font(.system(size: 10))
@@ -219,6 +276,37 @@ struct UpgradePaywallView: View {
         .task {
             try? await subscriptionService.loadProducts()
         }
+    }
+
+    private var yearlyProduct: Product? {
+        subscriptionService.products.first { $0.id == Constants.yearlyProductID }
+    }
+
+    private var weeklyProduct: Product? {
+        subscriptionService.products.first { $0.id == Constants.weeklyProductID }
+    }
+
+    private var yearlyPriceText: String {
+        if let product = yearlyProduct {
+            return "3-day free trial, then \(product.displayPrice)/year"
+        }
+        return "3-day free trial, then $59.99/year"
+    }
+
+    private var yearlyMonthlyPrice: String {
+        if let product = yearlyProduct {
+            let monthly = product.price / 12
+            let formatted = product.priceFormatStyle.format(monthly)
+            return formatted
+        }
+        return "$5.00"
+    }
+
+    private var weeklyPriceText: String {
+        if let product = weeklyProduct {
+            return "\(product.displayPrice)/week"
+        }
+        return "$4.99/week"
     }
 
     private func purchaseSelected() {
@@ -270,7 +358,7 @@ private struct UpgradePlanCard: View {
                                 .foregroundStyle(FuelColors.onDark)
                                 .padding(.horizontal, FuelSpacing.sm)
                                 .padding(.vertical, 2)
-                                .background(FuelColors.flame)
+                                .background(FuelColors.buttonFill)
                                 .clipShape(Capsule())
                         }
                     }

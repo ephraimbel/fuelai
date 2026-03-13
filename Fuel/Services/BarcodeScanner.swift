@@ -11,20 +11,27 @@ final class BarcodeScanner: NSObject, ObservableObject {
 
     func configure() {
         guard !isConfigured else { return }
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
-              let input = try? AVCaptureDeviceInput(device: device) else { return }
-
-        session.beginConfiguration()
-
-        if session.canAddInput(input) { session.addInput(input) }
-        if session.canAddOutput(metadataOutput) {
-            session.addOutput(metadataOutput)
-            metadataOutput.setMetadataObjectsDelegate(self, queue: .main)
-            metadataOutput.metadataObjectTypes = [.ean8, .ean13, .upce]
-        }
-
-        session.commitConfiguration()
         isConfigured = true
+
+        let session = self.session
+        let metadataOutput = self.metadataOutput
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+                  let input = try? AVCaptureDeviceInput(device: device) else { return }
+
+            session.beginConfiguration()
+
+            if session.canAddInput(input) { session.addInput(input) }
+            if session.canAddOutput(metadataOutput) {
+                session.addOutput(metadataOutput)
+                metadataOutput.setMetadataObjectsDelegate(self, queue: .main)
+                metadataOutput.metadataObjectTypes = [.ean8, .ean13, .upce]
+            }
+
+            session.commitConfiguration()
+            session.startRunning()
+        }
     }
 
     func start() {
@@ -34,8 +41,11 @@ final class BarcodeScanner: NSObject, ObservableObject {
     }
 
     func stop() {
+        // Always dispatch stop — session may still be starting on background thread
         DispatchQueue.global(qos: .userInitiated).async { [session] in
-            session.stopRunning()
+            if session.isRunning {
+                session.stopRunning()
+            }
         }
     }
 }

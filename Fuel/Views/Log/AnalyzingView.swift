@@ -1,184 +1,118 @@
 import SwiftUI
 
-// MARK: - Photo Scan Overlay (Premium scanning animation over captured photo)
+// MARK: - Photo Scan Overlay (Enterprise scanning animation over captured photo)
 
 struct PhotoScanOverlay: View {
     let imageData: Data
 
-    @State private var scanning = false
     @State private var messageIndex = 0
-    @State private var animationTask: Task<Void, Never>?
     @State private var appeared = false
-    @State private var dotCount = 0
+    @State private var animationTask: Task<Void, Never>?
+    private let startDate = Date()
 
     private let messages = [
         "Identifying foods",
         "Estimating portions",
         "Calculating macros",
-        "Cross-referencing database",
         "Finalizing results"
     ]
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                // Captured photo — full bleed
-                if let uiImage = UIImage(data: imageData) {
-                    Image(uiImage: uiImage)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: geo.size.width, height: geo.size.height)
-                        .clipped()
-                }
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
+            let elapsed = timeline.date.timeIntervalSince(startDate)
 
-                // Gradient vignette overlay (darkens edges, keeps center visible)
-                RadialGradient(
-                    colors: [
-                        .black.opacity(0.1),
-                        .black.opacity(0.25),
-                        .black.opacity(0.55)
-                    ],
-                    center: .center,
-                    startRadius: geo.size.width * 0.25,
-                    endRadius: geo.size.width * 0.75
-                )
-
-                // Scanning beam — a horizontal gradient bar that sweeps
-                TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
-                    let time = timeline.date.timeIntervalSinceReferenceDate
-                    // Smooth back-and-forth sweep (period ~2.8s)
-                    let cycle = time.truncatingRemainder(dividingBy: 2.8) / 2.8
-                    let position = cycle < 0.5
-                        ? easeInOut(cycle * 2.0)
-                        : easeInOut((1.0 - cycle) * 2.0)
-                    let yOffset = -geo.size.height * 0.42 + geo.size.height * 0.84 * position
-
-                    // Scan line with soft glow
-                    VStack(spacing: 0) {
-                        // Pre-glow
-                        Rectangle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        FuelColors.flame.opacity(0),
-                                        FuelColors.flame.opacity(0.05)
-                                    ],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
-                            .frame(height: 60)
-
-                        // Core beam
-                        Rectangle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        FuelColors.flame.opacity(0),
-                                        FuelColors.flame.opacity(0.6),
-                                        .white.opacity(0.3),
-                                        FuelColors.flame.opacity(0.6),
-                                        FuelColors.flame.opacity(0)
-                                    ],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                            .frame(height: 2)
-
-                        // Post-glow
-                        Rectangle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        FuelColors.flame.opacity(0.08),
-                                        FuelColors.flame.opacity(0)
-                                    ],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
-                            .frame(height: 80)
+            GeometryReader { geo in
+                ZStack {
+                    // Captured photo — full bleed
+                    if let uiImage = UIImage(data: imageData) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .clipped()
                     }
-                    .offset(y: yOffset)
-                    .opacity(appeared ? 1 : 0)
-                }
 
-                // Corner brackets (scan area indicator)
-                scanBrackets(geo: geo)
-                    .opacity(appeared ? 1 : 0)
+                    // Dark vignette overlay
+                    RadialGradient(
+                        colors: [
+                            Color.black.opacity(0.1),
+                            Color.black.opacity(0.5)
+                        ],
+                        center: .center,
+                        startRadius: geo.size.width * 0.15,
+                        endRadius: geo.size.width * 0.85
+                    )
 
-                // Subtle grid pattern inside brackets
-                scanGrid(geo: geo)
-                    .opacity(appeared ? 0.15 : 0)
+                    // Scan line with glow — driven by TimelineView
+                    scanLine(geo: geo, elapsed: elapsed)
+                        .opacity(appeared ? 1 : 0)
 
-                // Bottom status card
-                VStack {
-                    Spacer()
+                    // Corner brackets with breathing
+                    scanBrackets(geo: geo, elapsed: elapsed)
+                        .opacity(appeared ? 1 : 0)
 
-                    VStack(spacing: 12) {
-                        // Progress dots
-                        HStack(spacing: 6) {
-                            ForEach(0..<messages.count, id: \.self) { i in
-                                Circle()
-                                    .fill(i <= messageIndex ? FuelColors.flame : .white.opacity(0.3))
-                                    .frame(width: 6, height: 6)
-                                    .scaleEffect(i == messageIndex ? 1.2 : 1.0)
-                                    .animation(.easeInOut(duration: 0.3), value: messageIndex)
-                            }
-                        }
+                    // Particle dots floating up
+                    particleField(geo: geo, elapsed: elapsed)
+                        .opacity(appeared ? 0.6 : 0)
+
+                    // Bottom status pill
+                    VStack {
+                        Spacer()
 
                         HStack(spacing: 10) {
-                            // Animated spinner
+                            // Spinning arc — driven by TimelineView
                             ZStack {
                                 Circle()
-                                    .stroke(.white.opacity(0.15), lineWidth: 2)
-                                    .frame(width: 20, height: 20)
+                                    .stroke(Color.white.opacity(0.15), lineWidth: 2)
+                                    .frame(width: 18, height: 18)
 
                                 Circle()
                                     .trim(from: 0, to: 0.3)
-                                    .stroke(FuelColors.flame, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                                    .frame(width: 20, height: 20)
-                                    .rotationEffect(.degrees(scanning ? 360 : 0))
-                                    .animation(.linear(duration: 1.0).repeatForever(autoreverses: false), value: scanning)
+                                    .stroke(
+                                        FuelColors.flame,
+                                        style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                                    )
+                                    .frame(width: 18, height: 18)
+                                    .rotationEffect(.degrees(elapsed * 300))
                             }
 
-                            Text(messages[min(messageIndex, messages.count - 1)] + String(repeating: ".", count: dotCount))
-                                .font(FuelType.cardTitle)
+                            Text(messages[min(messageIndex, messages.count - 1)])
+                                .font(.system(size: 15, weight: .medium))
                                 .foregroundStyle(.white)
                                 .contentTransition(.numericText())
-                                .animation(.easeInOut(duration: 0.25), value: messageIndex)
-                                .animation(.easeInOut(duration: 0.2), value: dotCount)
+                                .animation(.easeInOut(duration: 0.4), value: messageIndex)
                         }
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 14)
+                        .background(
+                            Capsule()
+                                .fill(.ultraThinMaterial)
+                                .overlay(
+                                    Capsule()
+                                        .strokeBorder(
+                                            LinearGradient(
+                                                colors: [
+                                                    .white.opacity(0.3),
+                                                    .white.opacity(0.08)
+                                                ],
+                                                startPoint: .top,
+                                                endPoint: .bottom
+                                            ),
+                                            lineWidth: 0.5
+                                        )
+                                )
+                                .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
+                        )
+                        .opacity(appeared ? 1 : 0)
+                        .offset(y: appeared ? 0 : 20)
+                        .padding(.bottom, geo.safeAreaInsets.bottom + 36)
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 16)
-                    .background(
-                        RoundedRectangle(cornerRadius: 16)
-                            .fill(.ultraThinMaterial.opacity(0.9))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16)
-                                    .strokeBorder(
-                                        LinearGradient(
-                                            colors: [
-                                                .white.opacity(0.2),
-                                                .white.opacity(0.05)
-                                            ],
-                                            startPoint: .top,
-                                            endPoint: .bottom
-                                        ),
-                                        lineWidth: 0.5
-                                    )
-                            )
-                    )
-                    .padding(.bottom, geo.safeAreaInsets.bottom + 32)
                 }
             }
         }
         .ignoresSafeArea()
         .onAppear {
-            withAnimation(.easeOut(duration: 0.5)) { appeared = true }
-            scanning = true
+            withAnimation(.easeOut(duration: 0.6)) { appeared = true }
             startMessageCycle()
         }
         .onDisappear {
@@ -186,118 +120,148 @@ struct PhotoScanOverlay: View {
         }
     }
 
-    // MARK: - Scan Brackets
+    // MARK: - Scan Line (smooth sine wave motion)
 
-    private func scanBrackets(geo: GeometryProxy) -> some View {
-        let w = geo.size.width * 0.78
-        let h = geo.size.height * 0.55
-        let cx = geo.size.width / 2
-        let cy = geo.size.height / 2 - 20
-        let cornerLen: CGFloat = 28
-        let lw: CGFloat = 2.5
-        let r: CGFloat = 10
+    private func scanLine(geo: GeometryProxy, elapsed: TimeInterval) -> some View {
+        let travelTop = geo.size.height * 0.12
+        let travelBottom = geo.size.height * 0.78
+        // Smooth sine wave: ping-pong between top and bottom over ~3 seconds
+        let t = (sin(elapsed * 0.8) + 1) / 2 // 0...1
+        let currentY = travelTop + (travelBottom - travelTop) * t
+        let scanWidth = geo.size.width
 
         return ZStack {
-            // Four corner brackets
+            // Glow zone above line
+            LinearGradient(
+                colors: [.clear, FuelColors.flame.opacity(0.06)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(width: scanWidth, height: 60)
+            .offset(y: -35)
+
+            // Main scan line — bright center, fading edges
+            Rectangle()
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            .clear,
+                            FuelColors.flame.opacity(0.3),
+                            FuelColors.flame.opacity(0.7),
+                            .white.opacity(0.9),
+                            FuelColors.flame.opacity(0.7),
+                            FuelColors.flame.opacity(0.3),
+                            .clear
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .frame(width: scanWidth, height: 2)
+                .shadow(color: FuelColors.flame.opacity(0.5), radius: 8, y: 0)
+                .shadow(color: FuelColors.flame.opacity(0.2), radius: 20, y: 0)
+
+            // Shimmer traveling along the scan line
+            RoundedRectangle(cornerRadius: 1)
+                .fill(.white.opacity(0.8))
+                .frame(width: 40, height: 2)
+                .offset(x: shimmerX(width: scanWidth, elapsed: elapsed))
+
+            // Glow zone below line
+            LinearGradient(
+                colors: [FuelColors.flame.opacity(0.08), .clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(width: scanWidth, height: 70)
+            .offset(y: 40)
+        }
+        .position(x: geo.size.width / 2, y: currentY)
+    }
+
+    private func shimmerX(width: CGFloat, elapsed: TimeInterval) -> CGFloat {
+        let period = 1.5
+        let t = (elapsed.truncatingRemainder(dividingBy: period)) / period
+        return (t - 0.5) * width * 0.8
+    }
+
+    // MARK: - Scan Brackets (breathing + subtle rotation)
+
+    private func scanBrackets(geo: GeometryProxy, elapsed: TimeInterval) -> some View {
+        let w = geo.size.width * 0.76
+        let h = geo.size.height * 0.52
+        let cx = geo.size.width / 2
+        let cy = geo.size.height / 2 - 20
+        let cornerLen: CGFloat = 36
+        let lw: CGFloat = 2.5
+        let r: CGFloat = 14
+        // Subtle breathing scale
+        let breathe = 1.0 + sin(elapsed * 1.2) * 0.008
+
+        return ZStack {
+            // Top-left
             ScanCorner(length: cornerLen, radius: r)
                 .stroke(.white.opacity(0.8), style: StrokeStyle(lineWidth: lw, lineCap: .round))
                 .frame(width: cornerLen, height: cornerLen)
                 .position(x: cx - w / 2 + cornerLen / 2, y: cy - h / 2 + cornerLen / 2)
 
+            // Top-right
             ScanCorner(length: cornerLen, radius: r)
                 .stroke(.white.opacity(0.8), style: StrokeStyle(lineWidth: lw, lineCap: .round))
                 .frame(width: cornerLen, height: cornerLen)
                 .rotationEffect(.degrees(90))
                 .position(x: cx + w / 2 - cornerLen / 2, y: cy - h / 2 + cornerLen / 2)
 
+            // Bottom-left
             ScanCorner(length: cornerLen, radius: r)
                 .stroke(.white.opacity(0.8), style: StrokeStyle(lineWidth: lw, lineCap: .round))
                 .frame(width: cornerLen, height: cornerLen)
                 .rotationEffect(.degrees(-90))
                 .position(x: cx - w / 2 + cornerLen / 2, y: cy + h / 2 - cornerLen / 2)
 
+            // Bottom-right
             ScanCorner(length: cornerLen, radius: r)
                 .stroke(.white.opacity(0.8), style: StrokeStyle(lineWidth: lw, lineCap: .round))
                 .frame(width: cornerLen, height: cornerLen)
                 .rotationEffect(.degrees(180))
                 .position(x: cx + w / 2 - cornerLen / 2, y: cy + h / 2 - cornerLen / 2)
         }
+        .scaleEffect(breathe)
     }
 
-    // MARK: - Scan Grid
+    // MARK: - Floating Particles
 
-    private func scanGrid(geo: GeometryProxy) -> some View {
-        let w = geo.size.width * 0.78
-        let h = geo.size.height * 0.55
-        let cx = geo.size.width / 2
-        let cy = geo.size.height / 2 - 20
+    private func particleField(geo: GeometryProxy, elapsed: TimeInterval) -> some View {
+        let particles: [(x: CGFloat, speed: Double, size: CGFloat, delay: Double)] = [
+            (0.15, 12, 3, 0), (0.3, 15, 2, 1.2), (0.5, 10, 4, 0.5),
+            (0.7, 13, 2.5, 2.0), (0.85, 11, 3, 0.8), (0.25, 14, 2, 1.8),
+            (0.6, 9, 3.5, 0.3), (0.4, 16, 2, 2.5), (0.8, 12, 3, 1.5),
+        ]
 
-        return Canvas { context, _ in
-            let left = cx - w / 2
-            let top = cy - h / 2
-            let cols = 4
-            let rows = 3
+        return ZStack {
+            ForEach(0..<particles.count, id: \.self) { i in
+                let p = particles[i]
+                let adjustedTime = max(0, elapsed - p.delay)
+                let yProgress = (adjustedTime * p.speed).truncatingRemainder(dividingBy: Double(geo.size.height))
+                let y = geo.size.height - yProgress
+                let opacity = adjustedTime > 0 ? min(1.0, yProgress / 100) * (1.0 - yProgress / Double(geo.size.height)) : 0
 
-            for i in 1..<cols {
-                let x = left + w * CGFloat(i) / CGFloat(cols)
-                var path = Path()
-                path.move(to: CGPoint(x: x, y: top + 8))
-                path.addLine(to: CGPoint(x: x, y: top + h - 8))
-                context.stroke(path, with: .color(.white), lineWidth: 0.5)
-            }
-            for i in 1..<rows {
-                let y = top + h * CGFloat(i) / CGFloat(rows)
-                var path = Path()
-                path.move(to: CGPoint(x: left + 8, y: y))
-                path.addLine(to: CGPoint(x: left + w - 8, y: y))
-                context.stroke(path, with: .color(.white), lineWidth: 0.5)
+                Circle()
+                    .fill(FuelColors.flame.opacity(opacity * 0.5))
+                    .frame(width: p.size, height: p.size)
+                    .position(x: geo.size.width * p.x, y: y)
             }
         }
-        .allowsHitTesting(false)
     }
 
-    // MARK: - Animation Helpers
-
-    private func easeInOut(_ t: Double) -> Double {
-        t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
-    }
+    // MARK: - Message Cycle
 
     private func startMessageCycle() {
-        animationTask = Task {
-            // Cycle through messages
+        animationTask = Task { @MainActor in
             for i in 1..<messages.count {
-                // Dot animation within each message
-                for d in 1...3 {
-                    try? await Task.sleep(for: .seconds(0.5))
-                    guard !Task.isCancelled else { return }
-                    await MainActor.run {
-                        withAnimation { dotCount = d }
-                    }
-                }
-                try? await Task.sleep(for: .seconds(0.3))
+                try? await Task.sleep(for: .seconds(2.5))
                 guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    withAnimation {
-                        messageIndex = i
-                        dotCount = 0
-                    }
-                }
-            }
-
-            // After last message, keep animating dots
-            while !Task.isCancelled {
-                for d in 1...3 {
-                    try? await Task.sleep(for: .seconds(0.5))
-                    guard !Task.isCancelled else { return }
-                    await MainActor.run {
-                        withAnimation { dotCount = d }
-                    }
-                }
-                try? await Task.sleep(for: .seconds(0.3))
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    withAnimation { dotCount = 0 }
-                }
+                messageIndex = i
             }
         }
     }
@@ -329,6 +293,7 @@ struct AnalyzingView: View {
     @State private var messageIndex = 0
     @State private var progress: CGFloat = 0
     @State private var animationTask: Task<Void, Never>?
+    private let startDate = Date()
 
     private let messages = [
         "Identifying foods",
@@ -338,145 +303,87 @@ struct AnalyzingView: View {
     ]
 
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer()
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
+            let elapsed = timeline.date.timeIntervalSince(startDate)
 
-            // --- Flame Animation (TimelineView for reliable continuous animation) ---
-            TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
-                let time = timeline.date.timeIntervalSinceReferenceDate
-                let rotation = time.truncatingRemainder(dividingBy: 3.0) / 3.0 * 360
-                let slowRotation = time.truncatingRemainder(dividingBy: 5.0) / 5.0 * 360
-                let pulse = 1.0 + 0.06 * sin(time * 2.5)
-                let flamePulse = 1.0 + 0.04 * sin(time * 3.0)
-                let glowPulse = 0.08 + 0.04 * sin(time * 2.0)
+            VStack(spacing: 0) {
+                Spacer()
 
                 ZStack {
-                    // Outermost soft glow
+                    // Soft glow — pulsing
+                    let pulseScale = 1.0 + sin(elapsed * 1.5) * 0.06
                     Circle()
                         .fill(
                             RadialGradient(
-                                colors: [
-                                    FuelColors.flame.opacity(glowPulse * 0.5),
-                                    FuelColors.flame.opacity(0.0)
-                                ],
+                                colors: [FuelColors.flame.opacity(0.12), .clear],
                                 center: .center,
-                                startRadius: 50,
-                                endRadius: 90
+                                startRadius: 40,
+                                endRadius: 85
                             )
                         )
-                        .frame(width: 180, height: 180)
-                        .scaleEffect(pulse)
+                        .frame(width: 170, height: 170)
+                        .scaleEffect(pulseScale)
 
                     // Primary spinning arc
                     Circle()
                         .trim(from: 0, to: 0.3)
-                        .stroke(
-                            AngularGradient(
-                                colors: [
-                                    FuelColors.flame.opacity(0.0),
-                                    FuelColors.flame.opacity(0.5),
-                                    FuelColors.flame.opacity(0.0)
-                                ],
-                                center: .center
-                            ),
-                            style: StrokeStyle(lineWidth: 3, lineCap: .round)
-                        )
-                        .frame(width: 130, height: 130)
-                        .rotationEffect(.degrees(rotation))
+                        .stroke(FuelColors.flame.opacity(0.5), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .frame(width: 120, height: 120)
+                        .rotationEffect(.degrees(elapsed * 180))
 
-                    // Secondary arc (counter-rotating, slower)
+                    // Counter arc (slower, opposite)
                     Circle()
-                        .trim(from: 0.0, to: 0.2)
-                        .stroke(
-                            FuelColors.flame.opacity(0.18),
-                            style: StrokeStyle(lineWidth: 2, lineCap: .round)
-                        )
-                        .frame(width: 130, height: 130)
-                        .rotationEffect(.degrees(-slowRotation))
+                        .trim(from: 0, to: 0.15)
+                        .stroke(FuelColors.flame.opacity(0.2), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .frame(width: 120, height: 120)
+                        .rotationEffect(.degrees(-elapsed * 120))
 
-                    // Inner warm glow
+                    // Outer ring pulse
                     Circle()
-                        .fill(
-                            RadialGradient(
-                                colors: [
-                                    FuelColors.flame.opacity(glowPulse),
-                                    FuelColors.flame.opacity(0.0)
-                                ],
-                                center: .center,
-                                startRadius: 0,
-                                endRadius: 50
-                            )
-                        )
-                        .frame(width: 100, height: 100)
-                        .scaleEffect(pulse)
+                        .stroke(FuelColors.flame.opacity(0.08), lineWidth: 1)
+                        .frame(width: 140, height: 140)
+                        .scaleEffect(pulseScale)
 
-                    // Ember particles
-                    ForEach(0..<6, id: \.self) { i in
-                        let particleTime = time + Double(i) * 0.9
-                        let cycle = particleTime.truncatingRemainder(dividingBy: 2.4) / 2.4
-                        let angle = Double(i) * 60 + time * 30
-                        let radius = 20 + cycle * 40
-                        let opacity = cycle < 0.7 ? cycle / 0.7 * 0.6 : (1 - cycle) / 0.3 * 0.6
-
-                        Circle()
-                            .fill(FuelColors.flame)
-                            .frame(width: 3 - cycle * 1.5, height: 3 - cycle * 1.5)
-                            .offset(
-                                x: cos(angle * .pi / 180) * radius,
-                                y: sin(angle * .pi / 180) * radius - cycle * 20
-                            )
-                            .opacity(opacity)
-                    }
-
-                    // Center flame icon
-                    Image(systemName: "flame.fill")
-                        .font(.system(size: 34, weight: .semibold))
-                        .foregroundStyle(
-                            LinearGradient(
-                                colors: [
-                                    Color(red: 1.0, green: 0.55, blue: 0.0),
-                                    FuelColors.flame,
-                                    FuelColors.flame.opacity(0.7)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                        .scaleEffect(flamePulse)
+                    // Center flame — subtle breathing
+                    let flameScale = 1.0 + sin(elapsed * 2) * 0.04
+                    Image("FlameIcon")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 40, height: 40)
+                        .scaleEffect(flameScale)
                 }
-            }
-            .opacity(appeared ? 1 : 0)
-            .scaleEffect(appeared ? 1 : 0.7)
-            .padding(.bottom, FuelSpacing.xxl)
+                .opacity(appeared ? 1 : 0)
+                .scaleEffect(appeared ? 1 : 0.7)
+                .padding(.bottom, FuelSpacing.xxl)
 
-            // --- Status Message ---
-            Text(messages[min(messageIndex, messages.count - 1)])
-                .font(FuelType.section)
-                .foregroundStyle(FuelColors.ink)
-                .contentTransition(.numericText())
-                .animation(.easeInOut(duration: 0.35), value: messageIndex)
+                Text(messages[min(messageIndex, messages.count - 1)])
+                    .font(FuelType.section)
+                    .foregroundStyle(FuelColors.ink)
+                    .contentTransition(.numericText())
+                    .animation(.easeInOut(duration: 0.4), value: messageIndex)
 
-            // --- Progress Bar ---
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(FuelColors.cloud)
-
-                GeometryReader { geo in
+                // Progress bar
+                ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 3)
-                        .fill(
-                            LinearGradient(
-                                colors: [FuelColors.flame.opacity(0.8), FuelColors.flame],
-                                startPoint: .leading,
-                                endPoint: .trailing
+                        .fill(FuelColors.cloud)
+                    GeometryReader { geo in
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(
+                                LinearGradient(
+                                    colors: [FuelColors.flame.opacity(0.8), FuelColors.flame],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
                             )
-                        )
-                        .frame(width: geo.size.width * progress)
+                            .frame(width: geo.size.width * progress)
+                    }
                 }
-            }
-            .frame(width: 160, height: 5)
-            .padding(.top, FuelSpacing.lg)
+                .frame(width: 160, height: 4)
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+                .padding(.top, FuelSpacing.lg)
 
-            Spacer()
+                Spacer()
+            }
         }
         .frame(maxWidth: .infinity)
         .background(FuelColors.white)
@@ -490,29 +397,14 @@ struct AnalyzingView: View {
     }
 
     private func startAnimations() {
-        animationTask = Task {
-            // Animate progress bar smoothly
-            await MainActor.run {
-                withAnimation(.easeOut(duration: 2.5)) {
-                    progress = 0.45
-                }
-            }
-
-            // Cycle through messages
+        animationTask = Task { @MainActor in
+            withAnimation(.easeOut(duration: 2.5)) { progress = 0.45 }
             for i in 1..<messages.count {
                 try? await Task.sleep(for: .seconds(2.0))
                 guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    withAnimation { messageIndex = i }
-                }
+                messageIndex = i
             }
-
-            // Slow creep to 90%
-            await MainActor.run {
-                withAnimation(.easeOut(duration: 5.0)) {
-                    progress = 0.9
-                }
-            }
+            withAnimation(.easeOut(duration: 5.0)) { progress = 0.9 }
         }
     }
 }

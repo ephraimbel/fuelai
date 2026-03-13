@@ -20,6 +20,7 @@ struct UserProfile: Codable, Identifiable, Sendable {
     var targetWeightKg: Double?
     var dietStyle: DietStyle?
     var mealsPerDay: Int?
+    var waterGoalMl: Int?
     var unitSystem: UnitSystem
     var createdAt: Date
     var updatedAt: Date
@@ -39,6 +40,7 @@ struct UserProfile: Codable, Identifiable, Sendable {
         case targetWeightKg = "target_weight_kg"
         case dietStyle = "diet_style"
         case mealsPerDay = "meals_per_day"
+        case waterGoalMl = "water_goal_ml"
         case isPremium = "is_premium"
         case streakCount = "streak_count"
         case longestStreak = "longest_streak"

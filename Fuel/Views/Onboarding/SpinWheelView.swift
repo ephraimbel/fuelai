@@ -14,7 +14,7 @@ struct SpinWheelView: View {
         ("10% OFF", FuelColors.cloud),
         ("25% OFF", FuelColors.mist),
         ("15% OFF", FuelColors.cloud),
-        ("50% OFF", FuelColors.cloud),
+        ("60% OFF", FuelColors.cloud),
         ("20% OFF", FuelColors.mist),
         ("30% OFF", FuelColors.cloud),
     ]
@@ -137,7 +137,7 @@ struct SpinWheelView: View {
 
     private var resultCard: some View {
         VStack(spacing: FuelSpacing.lg) {
-            Text("You won 50% off!")
+            Text("You won 60% off!")
                 .font(FuelType.title)
                 .foregroundStyle(FuelColors.ink)
 
@@ -150,7 +150,7 @@ struct SpinWheelView: View {
                     .foregroundStyle(FuelColors.stone)
             }
 
-            Text("$3.99/wk")
+            Text("$4.99/wk")
                 .font(FuelType.body)
                 .foregroundStyle(FuelColors.stone)
                 .strikethrough()
@@ -211,7 +211,8 @@ struct SpinWheelView: View {
         }
 
         // Show result after spin completes
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.6) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_600_000_000)
             showConfetti = true
             FuelHaptics.shared.goalHit()
             FuelSounds.shared.celebration()

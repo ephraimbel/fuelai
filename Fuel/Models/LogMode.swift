@@ -5,5 +5,6 @@ enum LogMode: String, CaseIterable {
     case search = "Search"
     case barcode = "Barcode"
     case quickAdd = "Quick Add"
+    case savedMeals = "Saved Meals"
     case recentMeals = "Recent Meals"
 }

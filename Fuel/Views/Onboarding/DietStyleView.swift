@@ -11,15 +11,18 @@ struct DietStyleView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: FuelSpacing.sm) {
-                Text("Do you follow a diet?")
+            VStack(spacing: FuelSpacing.sm) {
+                (Text("Do you follow a ")
+                    .foregroundColor(FuelColors.ink) +
+                 Text("diet?")
+                    .foregroundColor(FuelColors.flame))
                     .font(FuelType.title)
-                    .foregroundStyle(FuelColors.ink)
                 Text("This adjusts your macro balance")
                     .font(FuelType.body)
                     .foregroundStyle(FuelColors.stone)
+                    .multilineTextAlignment(.center)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, FuelSpacing.xl)
             .padding(.top, FuelSpacing.xxl)
             .padding(.bottom, FuelSpacing.xl)

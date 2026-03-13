@@ -6,12 +6,13 @@ struct WeekStripView: View {
 
     private let calendar = Calendar.current
     private let dayLetters = ["S", "M", "T", "W", "T", "F", "S"]
+    private let dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
 
     var body: some View {
-        let weekDates = getWeekDates()
+        let dates = getTrailingDates()
 
         HStack(spacing: 0) {
-            ForEach(weekDates, id: \.self) { date in
+            ForEach(dates, id: \.self) { date in
                 let isSelected = calendar.isDate(date, inSameDayAs: appState.selectedDate)
                 let isToday = calendar.isDateInToday(date)
                 let dayNumber = calendar.component(.day, from: date)
@@ -31,7 +32,7 @@ struct WeekStripView: View {
                         ZStack {
                             if isSelected {
                                 Circle()
-                                    .fill(FuelColors.ink)
+                                    .fill(FuelColors.buttonFill)
                                     .frame(width: 34, height: 34)
                                     .matchedGeometryEffect(id: "weekSelection", in: selectionNamespace)
                             } else if isToday {
@@ -42,22 +43,21 @@ struct WeekStripView: View {
 
                             Text("\(dayNumber)")
                                 .font(FuelType.caption)
-                                .foregroundStyle(isSelected ? FuelColors.onDark : FuelColors.ink)
+                                .foregroundStyle(isSelected ? .white : FuelColors.ink)
                         }
                     }
                     .frame(maxWidth: .infinity, minHeight: 44)
                     .contentShape(Rectangle())
                 }
+                .accessibilityLabel("\(dayNames[weekday - 1]), \(dayNumber)")
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
     }
 
-    private func getWeekDates() -> [Date] {
-        let today = appState.selectedDate
-        let weekday = calendar.component(.weekday, from: today)
-        guard let startOfWeek = calendar.date(byAdding: .day, value: -(weekday - 1), to: today) else {
-            return [today]
-        }
-        return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: startOfWeek) }
+    /// Returns the last 7 days ending on today (today is always the rightmost day)
+    private func getTrailingDates() -> [Date] {
+        let today = calendar.startOfDay(for: Date())
+        return (0..<7).reversed().compactMap { calendar.date(byAdding: .day, value: -$0, to: today) }
     }
 }

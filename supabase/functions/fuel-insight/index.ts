@@ -79,19 +79,32 @@ Rules:
 
 Respond with ONLY the insight sentence, nothing else.`
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 64,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    })
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 20000)
+
+    let response: Response
+    try {
+      response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": ANTHROPIC_API_KEY,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 64,
+          messages: [{ role: "user", content: prompt }],
+        }),
+        signal: controller.signal,
+      })
+    } catch (fetchErr: unknown) {
+      clearTimeout(timeoutId)
+      const isAbort = fetchErr instanceof DOMException && fetchErr.name === "AbortError"
+      console.error("Anthropic fetch error:", isAbort ? "timeout" : fetchErr)
+      return jsonResponse({ insight: "Your day is waiting." })
+    }
+    clearTimeout(timeoutId)
 
     const result = await response.json()
 

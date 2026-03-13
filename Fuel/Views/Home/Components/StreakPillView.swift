@@ -5,16 +5,16 @@ struct StreakPillView: View {
 
     var body: some View {
         HStack(spacing: FuelSpacing.xs) {
-            Image(systemName: "flame.fill")
-                .font(.system(size: 12))
-                .foregroundStyle(FuelColors.flame)
             Text("\(streak)")
-                .font(FuelType.caption)
-                .foregroundStyle(FuelColors.ink)
+                .font(FuelType.caption.weight(.semibold))
+                .foregroundStyle(streak > 0 ? FuelColors.ink : FuelColors.fog)
+            Text(streak == 1 ? "day" : "days")
+                .font(FuelType.micro)
+                .foregroundStyle(FuelColors.fog)
         }
         .padding(.horizontal, FuelSpacing.md)
         .padding(.vertical, FuelSpacing.sm)
-        .background(streak > 0 ? FuelColors.flame.opacity(0.1) : FuelColors.cloud)
+        .background(streak > 0 ? FuelColors.flame.opacity(0.08) : FuelColors.cloud)
         .clipShape(Capsule())
     }
 }

@@ -54,6 +54,24 @@ actor AuthService {
 
     func restoreSession() async throws -> UserProfile? {
         guard let session = try? await supabase.auth.session else { return nil }
-        return try await fetchProfile(userId: session.user.id)
+        return try? await fetchProfile(userId: session.user.id)
+    }
+
+    /// Ensure a session exists — creates an anonymous one if needed.
+    /// Anonymous sessions let users scan food immediately without signing in.
+    /// When they later sign in with Apple, the anonymous session upgrades automatically.
+    func ensureSession() async {
+        // Already have a session? Done.
+        if Constants.supabase.auth.currentSession != nil { return }
+        do {
+            try await supabase.auth.signInAnonymously()
+            #if DEBUG
+            print("[Auth] Created anonymous session")
+            #endif
+        } catch {
+            #if DEBUG
+            print("[Auth] Anonymous sign-in failed: \(error)")
+            #endif
+        }
     }
 }

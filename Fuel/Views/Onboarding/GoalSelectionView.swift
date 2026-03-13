@@ -11,15 +11,18 @@ struct GoalSelectionView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: FuelSpacing.sm) {
-                Text("What's your goal?")
+            VStack(spacing: FuelSpacing.sm) {
+                (Text("What's your ")
+                    .foregroundColor(FuelColors.ink) +
+                 Text("goal?")
+                    .foregroundColor(FuelColors.flame))
                     .font(FuelType.title)
-                    .foregroundStyle(FuelColors.ink)
                 Text("Choose what fits you best")
                     .font(FuelType.body)
                     .foregroundStyle(FuelColors.stone)
+                    .multilineTextAlignment(.center)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, FuelSpacing.xl)
             .padding(.top, FuelSpacing.xxl)
             .padding(.bottom, FuelSpacing.xl)

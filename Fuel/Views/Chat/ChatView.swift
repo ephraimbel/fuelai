@@ -1,4 +1,5 @@
 import SwiftUI
+import Speech
 
 struct ChatView: View {
     @Environment(AppState.self) private var appState
@@ -8,129 +9,97 @@ struct ChatView: View {
     @State private var isTypingResponse = false
     @FocusState private var isFocused: Bool
     @State private var sendTask: Task<Void, Never>?
+    @State private var scrollTask: Task<Void, Never>?
+
+    @State private var chatLogQuery: String?
+    @State private var showingChatLog = false
+    @State private var showingGuide = false
+    @State private var chatLogAnalysis: FoodAnalysis?
+    @State private var showingChatLogResults = false
+    @State private var isLoggingFromChat = false
+    @State private var speechService = SpeechService()
 
     private let suggestedPrompts = [
-        ("chart.bar.fill", "How's my week looking?"),
-        ("fork.knife", "What should I eat for dinner?"),
+        ("calendar", "Plan my meals today"),
+        ("mappin.circle.fill", "Help me order at Chipotle"),
+        ("clock.fill", "Meal prep plan for the week"),
+        ("refrigerator.fill", "I have chicken, rice & broccoli"),
+        ("cart.fill", "Make me a grocery list"),
         ("bolt.fill", "Am I getting enough protein?"),
-        ("eye", "What patterns do you see?"),
     ]
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        if appState.chatMessages.isEmpty {
-                            emptyState
-                        } else {
-                            Color.clear.frame(height: FuelSpacing.lg)
+            chatScrollArea
 
-                            ForEach(Array(appState.chatMessages.enumerated()), id: \.element.id) { index, message in
-                                let isLatest = message.role == .assistant
-                                    && index == appState.chatMessages.count - 1
-                                    && isTypingResponse
-
-                                ChatBubbleView(
-                                    message: message,
-                                    isLatestAssistant: isLatest,
-                                    onFinishTyping: {
-                                        isTypingResponse = false
-                                        scrollToBottom(proxy: proxy)
-                                    }
-                                )
-                                .id(message.id)
-                                .padding(.bottom, messagePadding(for: message, at: index))
-                            }
-                        }
-
-                        if appState.isSendingMessage {
-                            thinkingIndicator
-                                .id("thinking")
-
-                            // Stop generation button
-                            Button {
-                                FuelHaptics.shared.tap()
-                                sendTask?.cancel()
-                                appState.isSendingMessage = false
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "stop.circle.fill")
-                                        .font(.system(size: 13, weight: .semibold))
-                                    Text("Stop")
-                                        .font(.system(size: 13, weight: .medium))
-                                }
-                                .foregroundStyle(FuelColors.stone)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 7)
-                                .background(
-                                    Capsule()
-                                        .fill(FuelColors.cloud)
-                                        .stroke(FuelColors.mist, lineWidth: 0.5)
-                                )
-                            }
-                            .padding(.top, FuelSpacing.sm)
-                        }
-
-                        Color.clear.frame(height: FuelSpacing.sm)
-                    }
-                }
-                .scrollDismissesKeyboard(.interactively)
-                .scrollIndicators(.hidden)
-                .contentMargins(.bottom, 4)
-                .onTapGesture {
-                    isFocused = false
-                }
-                .onChange(of: appState.chatMessages.count) { _, _ in
-                    scrollToBottom(proxy: proxy)
-                }
-                .onChange(of: appState.isSendingMessage) { _, isSending in
-                    if isSending {
-                        withAnimation(FuelAnimation.smooth) {
-                            proxy.scrollTo("thinking", anchor: .bottom)
-                        }
-                    }
-                }
-                .onChange(of: isFocused) { _, focused in
-                    if focused {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                            scrollToBottom(proxy: proxy)
-                        }
-                    }
-                }
+            // Upgrade banner for free users
+            if !subscriptionService.isPremium {
+                upgradeBanner
             }
 
             inputBar
+        }
+        .sheet(isPresented: $showingPaywall) {
+            UpgradePaywallView(reason: .chatLimit)
+                .environment(subscriptionService)
+        }
+        .sheet(isPresented: $showingGuide) {
+            ChatGuideView()
+        }
+        .sheet(isPresented: $showingChatLogResults) {
+            if let analysis = chatLogAnalysis {
+                NavigationStack {
+                    FoodResultsView(
+                        analysis: analysis,
+                        imageData: nil,
+                        onLog: { adjusted in
+                            logMealFromChat(adjusted)
+                        },
+                        onRetake: {
+                            showingChatLogResults = false
+                        },
+                        isLogging: isLoggingFromChat,
+                        retakeLabel: "Back"
+                    )
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button {
+                                showingChatLogResults = false
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(FuelColors.stone)
+                            }
+                        }
+                    }
+                }
+                .environment(appState)
+            }
         }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button {
                     FuelHaptics.shared.tap()
-                    isFocused = false
-                    withAnimation(FuelAnimation.snappy) {
-                        appState.selectedTab = .home
-                    }
+                    // Dismiss keyboard immediately
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    // Switch tab — the ZStack animation modifier handles the transition
+                    appState.selectedTab = .home
                 } label: {
+                    // Larger hit target for reliable taps
                     Image(systemName: "chevron.left")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(FuelColors.stone)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .accessibilityLabel("Back to home")
             }
             ToolbarItem(placement: .principal) {
-                HStack(spacing: 7) {
-                    ZStack {
-                        Circle()
-                            .fill(FuelColors.flame.opacity(0.12))
-                            .frame(width: 26, height: 26)
-                        Image(systemName: "flame.fill")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(FuelColors.flame)
-                    }
-                    Text("fuel AI")
-                        .font(.system(size: 17, weight: .semibold, design: .default))
-                        .foregroundStyle(FuelColors.ink)
-                }
+                Image("FuelAILogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(height: 28)
             }
             ToolbarItem(placement: .topBarTrailing) {
                 if !appState.chatMessages.isEmpty {
@@ -171,13 +140,21 @@ struct ChatView: View {
                 let messages = try? await appState.databaseService?.getChatHistory(userId: profile.id)
                 if let messages { appState.chatMessages = messages }
             }
+            // Daily summary check
+            await checkDailySummary()
+        }
+        .sheet(isPresented: $showingChatLog) {
+            if let query = chatLogQuery {
+                LogFlowView()
+                    .environment(appState)
+                    .environment(subscriptionService)
+            }
         }
         .onDisappear {
             isFocused = false
             sendTask?.cancel()
-        }
-        .sheet(isPresented: $showingPaywall) {
-            UpgradePaywallView(reason: .chatLimit)
+            scrollTask?.cancel()
+            if speechService.isListening { speechService.stopListening() }
         }
     }
 
@@ -191,9 +168,132 @@ struct ChatView: View {
 
     // MARK: - Empty State
 
+    private var chatScrollArea: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    if appState.chatMessages.isEmpty {
+                        emptyState
+                    } else {
+                        Color.clear.frame(height: FuelSpacing.lg)
+
+                        ForEach(Array(appState.chatMessages.enumerated()), id: \.element.id) { index, message in
+                            let isLatest = message.role == .assistant
+                                && index == appState.chatMessages.count - 1
+                                && isTypingResponse
+
+                            ChatBubbleView(
+                                message: message,
+                                isLatestAssistant: isLatest,
+                                onFinishTyping: {
+                                    isTypingResponse = false
+                                    scrollToBottom(proxy: proxy)
+                                },
+                                onLogFood: { query in
+                                    handleFoodLog(query: query)
+                                },
+                                onDirectLog: { name, cal, protein, carbs, fat in
+                                    handleDirectLog(name: name, calories: cal, protein: protein, carbs: carbs, fat: fat)
+                                },
+                                onApplyEdit: { editData in
+                                    handleMealEdit(editData: editData)
+                                },
+                                onLogWithAnalysis: { analysis in
+                                    handleLogWithAnalysis(analysis)
+                                }
+                            )
+                            .id(message.id)
+                            .padding(.bottom, messagePadding(for: message, at: index))
+                        }
+                    }
+
+                    if appState.isSendingMessage {
+                        thinkingIndicator
+                            .id("thinking")
+
+                        Button {
+                            FuelHaptics.shared.tap()
+                            sendTask?.cancel()
+                            appState.isSendingMessage = false
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "stop.circle.fill")
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text("Stop")
+                                    .font(.system(size: 13, weight: .medium))
+                            }
+                            .foregroundStyle(FuelColors.stone)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 7)
+                            .background(
+                                Capsule()
+                                    .fill(FuelColors.cardBackground)
+                                    .shadow(color: FuelColors.cardShadow, radius: 6, y: 2)
+                            )
+                        }
+                        .padding(.top, FuelSpacing.sm)
+                    }
+
+                    Color.clear.frame(height: FuelSpacing.sm)
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .scrollIndicators(.hidden)
+            .contentMargins(.bottom, 4)
+            .onTapGesture {
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            }
+            .onChange(of: appState.chatMessages.count) { _, _ in
+                scrollToBottom(proxy: proxy)
+            }
+            .onChange(of: appState.isSendingMessage) { _, isSending in
+                if isSending {
+                    withAnimation(FuelAnimation.smooth) {
+                        proxy.scrollTo("thinking", anchor: .bottom)
+                    }
+                }
+            }
+            .onChange(of: isFocused) { _, focused in
+                if focused {
+                    scrollTask = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                        scrollToBottom(proxy: proxy)
+                    }
+                }
+            }
+        }
+    }
+
     private var emptyState: some View {
         VStack(spacing: 0) {
-            Spacer().frame(minHeight: 80)
+            Spacer().frame(minHeight: 40)
+
+            // Guide button
+            Button {
+                FuelHaptics.shared.tap()
+                showingGuide = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(FuelColors.flame)
+                    Text("See what I can do")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(FuelColors.ink)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(FuelColors.fog)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(
+                    Capsule()
+                        .fill(FuelColors.cloud)
+                )
+            }
+            .pressable()
+
+            Spacer().frame(minHeight: 28)
 
             VStack(spacing: FuelSpacing.lg + 4) {
                 ZStack {
@@ -204,19 +304,20 @@ struct ChatView: View {
                                 colors: [FuelColors.flame.opacity(0.10), FuelColors.flame.opacity(0.0)],
                                 center: .center,
                                 startRadius: 0,
-                                endRadius: 56
+                                endRadius: 72
                             )
                         )
-                        .frame(width: 112, height: 112)
+                        .frame(width: 144, height: 144)
 
                     // Inner circle
                     Circle()
                         .fill(FuelColors.flame.opacity(0.12))
-                        .frame(width: 56, height: 56)
+                        .frame(width: 72, height: 72)
 
-                    Image(systemName: "flame.fill")
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundStyle(FuelColors.flame)
+                    Image("FlameIcon")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 44, height: 44)
                 }
 
                 VStack(spacing: FuelSpacing.sm) {
@@ -261,8 +362,8 @@ struct ChatView: View {
                         .padding(14)
                         .background(
                             RoundedRectangle(cornerRadius: 14)
-                                .fill(FuelColors.cloud)
-                                .stroke(FuelColors.mist, lineWidth: 0.5)
+                                .fill(FuelColors.cardBackground)
+                                .shadow(color: FuelColors.cardShadow, radius: 8, y: 3)
                         )
                     }
                     .pressable()
@@ -281,15 +382,10 @@ struct ChatView: View {
     private var thinkingIndicator: some View {
         HStack(alignment: .top, spacing: 10) {
             // Avatar
-            ZStack {
-                Circle()
-                    .fill(FuelColors.flame.opacity(0.12))
-                    .frame(width: 30, height: 30)
-
-                Image(systemName: "flame.fill")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(FuelColors.flame)
-            }
+            Image("FlameIcon")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 30, height: 30)
 
             // Thinking bubble
             HStack(spacing: 5) {
@@ -313,6 +409,37 @@ struct ChatView: View {
         .chatAppear()
     }
 
+    // MARK: - Upgrade Banner
+
+    private var upgradeBanner: some View {
+        Button {
+            FuelHaptics.shared.tap()
+            showingPaywall = true
+        } label: {
+            HStack(spacing: FuelSpacing.sm) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(FuelColors.flame)
+
+                Text("Upgrade to fuel+ for the full AI coach")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(FuelColors.stone)
+
+                Spacer()
+
+                Text("Upgrade")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(FuelColors.flame)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(FuelColors.flame.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .padding(.horizontal, FuelSpacing.lg)
+        .padding(.top, 6)
+    }
+
     // MARK: - Input Bar
 
     private var inputBar: some View {
@@ -321,7 +448,7 @@ struct ChatView: View {
 
             HStack(alignment: .bottom, spacing: 8) {
                 // Text input
-                TextField("Message...", text: $messageText, axis: .vertical)
+                TextField(speechService.isListening ? "Listening..." : "Message...", text: $messageText, axis: .vertical)
                     .font(.system(size: 16, weight: .regular))
                     .foregroundStyle(FuelColors.ink)
                     .focused($isFocused)
@@ -333,8 +460,9 @@ struct ChatView: View {
                         RoundedRectangle(cornerRadius: 20)
                             .fill(FuelColors.cloud)
                             .stroke(
+                                speechService.isListening ? FuelColors.flame.opacity(0.5) :
                                 isFocused ? FuelColors.mist : FuelColors.mist.opacity(0.5),
-                                lineWidth: 0.5
+                                lineWidth: speechService.isListening ? 1.5 : 0.5
                             )
                     )
                     .onSubmit {
@@ -342,12 +470,28 @@ struct ChatView: View {
                     }
                     .submitLabel(.send)
 
+                // Mic button
+                Button {
+                    toggleVoiceInput()
+                } label: {
+                    Circle()
+                        .fill(speechService.isListening ? FuelColors.flame : FuelColors.cloud)
+                        .frame(width: 36, height: 36)
+                        .overlay(
+                            Image(systemName: speechService.isListening ? "mic.fill" : "mic")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(speechService.isListening ? .white : FuelColors.stone)
+                        )
+                }
+                .accessibilityLabel(speechService.isListening ? "Stop dictation" : "Start dictation")
+                .animation(FuelAnimation.quick, value: speechService.isListening)
+
                 // Send button
                 Button {
                     sendCurrentMessage()
                 } label: {
                     Circle()
-                        .fill(canSend ? FuelColors.ink : FuelColors.cloud)
+                        .fill(canSend ? FuelColors.inkSurface : FuelColors.cloud)
                         .frame(width: 36, height: 36)
                         .overlay(
                             Image(systemName: "arrow.up")
@@ -369,6 +513,11 @@ struct ChatView: View {
                 .background(.ultraThinMaterial)
                 .ignoresSafeArea(edges: .bottom)
         )
+        .onChange(of: speechService.transcript) { _, newValue in
+            if !newValue.isEmpty {
+                messageText = newValue
+            }
+        }
     }
 
     private var canSend: Bool {
@@ -385,9 +534,27 @@ struct ChatView: View {
         }
     }
 
+    private func toggleVoiceInput() {
+        if speechService.isListening {
+            speechService.stopListening()
+            FuelHaptics.shared.tap()
+        } else {
+            FuelHaptics.shared.tap()
+            Task {
+                let granted = await speechService.requestPermissions()
+                guard granted else { return }
+                speechService.startListening()
+            }
+        }
+    }
+
     private func sendCurrentMessage() {
+        // Stop listening if active before sending
+        if speechService.isListening {
+            speechService.stopListening()
+        }
         let text = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty, !appState.isSendingMessage else { return }
         messageText = ""
         FuelHaptics.shared.send()
         sendMessage(text)
@@ -405,18 +572,42 @@ struct ChatView: View {
         let greetings = ["hi", "hey", "hello", "sup", "yo", "what's up", "hola", "gm"]
         if msg.count <= 12 && greetings.contains(where: { msg.hasPrefix($0) }) {
             if context.todayCalories > 0 {
-                return "You've logged \(context.todayCalories) of \(context.targetCalories) calories today. \(remaining > 0 ? "You have \(remaining) cal left — want help planning your next meal?" : "You're at your target for the day.")"
+                let greetingResponses = [
+                    "You've logged \(context.todayCalories) of \(context.targetCalories) calories today. \(remaining > 0 ? "You have \(remaining) cal left — want help planning your next meal?" : "You're at your target for the day.")",
+                    "Hey! You're at \(context.todayCalories) cal so far. \(remaining > 0 ? "\(remaining) cal to go — I can help you plan what's next." : "Right at your target — solid day.")",
+                    "Looking good — \(context.todayCalories) cal logged. \(proteinLeft > 0 ? "You still need \(proteinLeft)g protein though." : "Protein is on track too.")",
+                    "\(context.todayCalories) cal in so far today. \(remaining > 200 ? "Room for a good meal still." : remaining > 0 ? "Almost there for the day." : "You've hit your target!")",
+                ]
+                return greetingResponses.randomElement() ?? "I can help with that. What are you thinking about?"
             } else {
-                return "Nothing logged yet today. What did you have for your first meal?"
+                let emptyResponses = [
+                    "Nothing logged yet today. What did you have for your first meal?",
+                    "Hey! Your log is empty — what have you eaten so far?",
+                    "Good to see you! Start logging to track your progress today.",
+                    "No meals logged yet. Tap + to get started, or tell me what you've eaten.",
+                ]
+                return emptyResponses.randomElement() ?? "I can help with that. What are you thinking about?"
             }
         }
 
         // Calorie / progress questions
-        if msg.contains("calori") || msg.contains("how am i") || msg.contains("progress") || msg.contains("how much") || msg.contains("remaining") || msg.contains("left") || msg.contains("how's my") || msg.contains("week") {
+        if msg.contains("calori") || msg.contains("how am i") || msg.contains("progress") || msg.contains("how much") || msg.contains("remaining") || msg.contains("left") || msg.contains("how's my") || msg.contains("week") || msg.contains("status") || msg.contains("update") || msg.contains("summary") || msg.contains("today") {
             if context.todayCalories == 0 {
-                return "You haven't logged anything today. Your target is \(context.targetCalories) cal. Log a meal to get started."
+                let emptyProgress = [
+                    "You haven't logged anything today. Your target is \(context.targetCalories) cal. Log a meal to get started.",
+                    "Nothing tracked yet. You're aiming for \(context.targetCalories) cal and \(context.targetProtein)g protein today. What have you eaten?",
+                    "Your log is empty. Target: \(context.targetCalories) cal, \(context.targetProtein)g protein. Start tracking to see your progress.",
+                ]
+                return emptyProgress.randomElement() ?? "I can help with that. What are you thinking about?"
             }
-            return "You're at \(context.todayCalories) of \(context.targetCalories) calories. \(remaining > 0 ? "\(remaining) cal remaining." : "You've hit your target.") Protein: \(Int(context.todayProtein))g of \(context.targetProtein)g."
+            let calPct = Int(Double(context.todayCalories) / Double(context.targetCalories) * 100)
+            let progressResponses = [
+                "You're at \(context.todayCalories) of \(context.targetCalories) calories (\(calPct)%). \(remaining > 0 ? "\(remaining) cal remaining." : "You've hit your target.") Protein: \(Int(context.todayProtein))g of \(context.targetProtein)g.",
+                "\(context.todayCalories) cal logged (\(calPct)% of target). \(remaining > 0 ? "\(remaining) left to go." : "At your target.") Macros: \(Int(context.todayProtein))g protein, \(Int(context.todayCarbs))g carbs, \(Int(context.todayFat))g fat.",
+                "Today so far: \(context.todayCalories)/\(context.targetCalories) cal. Protein: \(Int(context.todayProtein))/\(context.targetProtein)g. \(remaining > 0 ? "You've got \(remaining) cal to work with." : "Calorie target reached.")",
+                "Status check: \(calPct)% through your calories. \(proteinLeft > 0 ? "\(proteinLeft)g protein still needed." : "Protein target hit.") \(remaining > 200 ? "Room for more food." : remaining > 0 ? "Almost done for the day." : "You're all set.")",
+            ]
+            return progressResponses.randomElement() ?? "I can help with that. What are you thinking about?"
         }
 
         // Protein questions — handle both personal ("am I getting enough") and general ("good sources of protein")
@@ -451,13 +642,45 @@ struct ChatView: View {
         }
 
         // What to eat / meal suggestions
-        if msg.contains("what should i eat") || msg.contains("what to eat") || msg.contains("suggest") || msg.contains("recommend") || msg.contains("dinner") || msg.contains("lunch") || msg.contains("snack") || msg.contains("breakfast") || msg.contains("meal idea") {
-            if remaining > 400 {
-                return "You have \(remaining) cal left. \(proteinLeft > 20 ? "Prioritize protein — you need \(proteinLeft)g more." : "Your protein is solid.") A balanced meal with lean protein and vegetables would fit well."
+        if msg.contains("what should i eat") || msg.contains("what to eat") || msg.contains("suggest") || msg.contains("recommend") || msg.contains("dinner") || msg.contains("lunch") || msg.contains("snack") || msg.contains("breakfast") || msg.contains("meal idea") || msg.contains("hungry") || msg.contains("feed me") || msg.contains("need food") {
+            let hour = Calendar.current.component(.hour, from: Date())
+            let mealTime = hour < 11 ? "breakfast" : hour < 15 ? "lunch" : hour < 18 ? "afternoon snack" : "dinner"
+
+            if remaining > 600 {
+                let bigMealOptions = [
+                    "You have \(remaining) cal left — plenty of room. \(proteinLeft > 20 ? "Focus on protein (\(proteinLeft)g to go)." : "Protein is covered.") Try grilled chicken with rice and vegetables, or a salmon bowl with sweet potato.",
+                    "\(remaining) cal remaining — time for a solid \(mealTime). A burrito bowl with chicken, beans, rice, and veggies would be around 500-600 cal and high in protein.",
+                    "Room for a real meal (\(remaining) cal left). Consider stir-fry with lean protein and veggies over rice, or a hearty salad with grilled chicken and avocado.",
+                    "With \(remaining) cal to work with, you could do a great \(mealTime). Pasta with ground turkey and marinara, or a poke bowl would both fit well.",
+                ]
+                return bigMealOptions.randomElement() ?? "I can help with that. What are you thinking about?"
+            } else if remaining > 300 {
+                let medMealOptions = [
+                    "\(remaining) cal left — a moderate meal fits. Try a protein-focused option like a chicken wrap, tuna salad, or an omelet with veggies.",
+                    "You've got \(remaining) cal. A Greek yogurt parfait with granola, or a turkey sandwich on whole wheat would be solid choices.",
+                    "Room for about \(remaining) cal. Consider eggs with toast, a protein shake with a banana, or a small chicken salad.",
+                    "\(remaining) cal to play with. \(proteinLeft > 15 ? "Prioritize protein — try cottage cheese, a protein bar, or some grilled chicken." : "You could go with lighter carbs like a small wrap or fruit.")",
+                ]
+                return medMealOptions.randomElement() ?? "I can help with that. What are you thinking about?"
+            } else if remaining > 100 {
+                let snackOptions = [
+                    "You have \(remaining) cal left — snack territory. Greek yogurt (100-150 cal), a handful of almonds (160 cal), or an apple with a tablespoon of peanut butter (190 cal).",
+                    "\(remaining) cal remaining. Light snack ideas: string cheese (80 cal), a hard boiled egg (70 cal), cottage cheese (100 cal), or a protein bar.",
+                    "Almost there with \(remaining) cal left. A piece of fruit, some veggies with hummus, or a small handful of nuts would round out the day.",
+                    "Room for a small snack (\(remaining) cal). Rice cakes with PB, a protein shake, or some edamame would all work.",
+                ]
+                return snackOptions.randomElement() ?? "I can help with that. What are you thinking about?"
             } else if remaining > 0 {
-                return "You have \(remaining) cal remaining. A light option — Greek yogurt, a handful of nuts, or a protein shake — would close out the day."
+                return ["Just \(remaining) cal left. A piece of fruit or some raw veggies would be a clean finish to the day.",
+                        "Barely any room left (\(remaining) cal). If you're hungry, go for cucumber, celery, or a small apple.",
+                        "Almost at target with \(remaining) cal. You could have some herbal tea or a few carrot sticks."].randomElement() ?? "I can help with that. What are you thinking about?"
             }
-            return "You're at your calorie target. If you're still hungry, opt for something low-calorie like vegetables or broth."
+            let overOptions = [
+                "You're at your calorie target. If you're still hungry, opt for something very low-calorie like vegetables, broth, or herbal tea.",
+                "You've hit your target for the day. If hunger strikes, try sparkling water with lemon, raw veggies, or a cup of broth — minimal calories, still satisfying.",
+                "Already at target. Best options if you're hungry: cucumber slices, celery, hot tea, or a small portion of broth. Save the bigger meal for tomorrow.",
+            ]
+            return overOptions.randomElement() ?? "I can help with that. What are you thinking about?"
         }
 
         // What have I eaten
@@ -470,10 +693,34 @@ struct ChatView: View {
 
         // Streak
         if msg.contains("streak") {
-            if context.streak > 0 {
-                return "You're on a \(context.streak)-day streak. Keep logging to maintain it."
+            if context.streak >= 30 {
+                let longStreakResponses = [
+                    "\(context.streak)-day streak! That's exceptional. You've turned tracking into a real habit — this level of consistency is what separates results from intentions.",
+                    "Incredible — \(context.streak) days straight. Most people quit in the first week. You're proof that showing up daily works.",
+                    "\(context.streak) days and counting. You're in the top tier of consistency. This is when real body composition changes happen.",
+                ]
+                return longStreakResponses.randomElement() ?? "I can help with that. What are you thinking about?"
+            } else if context.streak >= 7 {
+                let weekStreakResponses = [
+                    "You're on a \(context.streak)-day streak. At this point, you're building a habit. Keep going — the magic happens around 21+ days.",
+                    "\(context.streak) days in a row! You've proven you can show up consistently. Now aim for the next milestone.",
+                    "Solid \(context.streak)-day streak. Research shows habits form around 21-66 days. You're on your way.",
+                ]
+                return weekStreakResponses.randomElement() ?? "I can help with that. What are you thinking about?"
+            } else if context.streak > 0 {
+                let shortStreakResponses = [
+                    "You're on a \(context.streak)-day streak. Keep logging to maintain it — every day counts.",
+                    "\(context.streak)-day streak. Build toward 7 days — that's where the momentum really kicks in.",
+                    "\(context.streak) days strong. Don't break the chain — log today and keep building.",
+                ]
+                return shortStreakResponses.randomElement() ?? "I can help with that. What are you thinking about?"
             }
-            return "No active streak yet. Log a meal today to start one."
+            let noStreakResponses = [
+                "No active streak yet. Log a meal today to start one — even a single day counts.",
+                "Start your streak today! Logging just one meal kicks it off. Consistency beats perfection.",
+                "No streak going — but that changes right now. Log what you've eaten and day 1 begins.",
+            ]
+            return noStreakResponses.randomElement() ?? "I can help with that. What are you thinking about?"
         }
 
         // Weight / goal
@@ -632,13 +879,13 @@ struct ChatView: View {
 
         // No data logged yet
         if context.todayCalories == 0 {
-            var response = "Your goal is \(goalText) at \(context.targetCalories) cal/day with \(context.targetProtein)g protein. "
-            response += "Start by logging your first meal — consistency is the single biggest factor in reaching any nutrition goal. "
-            response += "Even rough estimates help build the habit."
-            if context.streak > 0 {
-                response += " You're on a \(context.streak)-day streak — log today to keep it going."
-            }
-            return response
+            let noDataResponses = [
+                "Your goal is \(goalText) at \(context.targetCalories) cal/day with \(context.targetProtein)g protein. Start by logging your first meal — consistency is the single biggest factor in reaching any nutrition goal.\(context.streak > 0 ? " You're on a \(context.streak)-day streak — log today to keep it going." : "")",
+                "Nothing logged yet. Your target is \(context.targetCalories) cal and \(context.targetProtein)g protein. The most important step is the first one — log what you've eaten so far and we'll work from there.\(context.streak > 0 ? " Don't break your \(context.streak)-day streak!" : "")",
+                "Let's get today started. You're aiming for \(context.targetCalories) cal. Log your first meal — even a rough estimate is better than nothing. Tracking builds awareness, and awareness drives results.\(context.streak > 0 ? " Keep that \(context.streak)-day streak alive!" : "")",
+                "Hey coach mode activated. Your \(goalText) plan calls for \(context.targetCalories) cal/day. Step one: log what you've had. I'll guide you from there.",
+            ]
+            return noDataResponses.randomElement() ?? "I can help with that. What are you thinking about?"
         }
 
         var tips: [String] = []
@@ -646,17 +893,46 @@ struct ChatView: View {
         // Calorie analysis
         let calPct = Double(context.todayCalories) / Double(context.targetCalories) * 100
         if remaining > 500 {
-            tips.append("You've only eaten \(context.todayCalories) of \(context.targetCalories) cal (\(Int(calPct))%). If you're \(goalText == "losing weight" ? "cutting" : "trying to hit your target"), make sure you're not under-eating — that can slow your metabolism and lead to overeating later.")
+            let underEatingTips = [
+                "You've only eaten \(context.todayCalories) of \(context.targetCalories) cal (\(Int(calPct))%). If you're \(goalText == "losing weight" ? "cutting" : "trying to hit your target"), make sure you're not under-eating — that can slow your metabolism and lead to overeating later.",
+                "At \(Int(calPct))% of your target with \(remaining) cal to go. Under-eating consistently is counterproductive — it increases cravings and can tank your energy. Make sure you're fueling properly.",
+                "Only \(context.todayCalories) cal so far. You still have \(remaining) to go. Eating too little is just as problematic as eating too much — your body needs fuel to function and recover.",
+            ]
+            tips.append(underEatingTips.randomElement() ?? "I can help with that. What are you thinking about?")
         } else if remaining < 0 {
             let over = abs(remaining)
-            tips.append("You're \(over) cal over your \(context.targetCalories) target. Don't stress — one day over won't derail you. Tomorrow, aim to hit your target and the weekly average will balance out.")
+            let overTips = [
+                "You're \(over) cal over your \(context.targetCalories) target. Don't stress — one day over won't derail you. Tomorrow, aim to hit your target and the weekly average will balance out.",
+                "Over by \(over) cal. Here's the truth: progress is about averages, not individual days. Get back on track tomorrow and your weekly numbers will still be solid.",
+                "\(over) cal above target. It happens. The worst thing you can do is try to \"make up for it\" by skipping meals tomorrow. Just reset and eat normally.",
+            ]
+            tips.append(overTips.randomElement() ?? "I can help with that. What are you thinking about?")
+        } else if remaining > 0 && remaining <= 300 {
+            let closeTips = [
+                "You're close to your target with \(remaining) cal left. Nice control today.",
+                "Almost there — just \(remaining) cal remaining. A small snack would round this out perfectly.",
+                "Dialed in at \(context.todayCalories) cal with only \(remaining) to go. This is solid consistency.",
+            ]
+            tips.append(closeTips.randomElement() ?? "I can help with that. What are you thinking about?")
         }
 
         // Protein analysis
         if proteinLeft > 30 {
-            tips.append("You still need \(proteinLeft)g protein. Protein is key for \(goalText == "losing weight" ? "preserving muscle while cutting" : goalText == "gaining weight" ? "building muscle" : "staying full and maintaining lean mass"). Try adding Greek yogurt (15g), eggs (6g each), or a chicken breast (31g) to close the gap.")
+            let proteinTips = [
+                "You still need \(proteinLeft)g protein. Protein is key for \(goalText == "losing weight" ? "preserving muscle while cutting" : goalText == "gaining weight" ? "building muscle" : "staying full and maintaining lean mass"). Try adding Greek yogurt (15g), eggs (6g each), or a chicken breast (31g) to close the gap.",
+                "\(proteinLeft)g protein remaining. Top sources to consider: cottage cheese (14g/half cup), tuna (29g/100g), or a protein shake (20-30g). Prioritize this in your next meal.",
+                "Protein gap alert: \(proteinLeft)g still needed. This matters for \(goalText == "losing weight" ? "keeping muscle during your cut" : goalText == "gaining weight" ? "muscle growth" : "recovery and satiety"). Try stacking protein in your next 1-2 meals.",
+            ]
+            tips.append(proteinTips.randomElement() ?? "I can help with that. What are you thinking about?")
         } else if proteinLeft <= 0 {
-            tips.append("Protein is on point at \(Int(context.todayProtein))g — that's solid for \(goalText).")
+            let proteinHitTips = [
+                "Protein is on point at \(Int(context.todayProtein))g — that's solid for \(goalText).",
+                "You crushed your protein target (\(Int(context.todayProtein))g). This is how you \(goalText == "losing weight" ? "preserve muscle while cutting" : goalText == "gaining weight" ? "fuel muscle growth" : "maintain lean mass").",
+                "Protein: done. \(Int(context.todayProtein))g logged. Your muscles are happy.",
+            ]
+            tips.append(proteinHitTips.randomElement() ?? "I can help with that. What are you thinking about?")
+        } else {
+            tips.append("Protein at \(Int(context.todayProtein))g with \(proteinLeft)g to go. You're on pace — keep including protein with your remaining meals.")
         }
 
         // Macro balance check
@@ -673,21 +949,44 @@ struct ChatView: View {
         }
 
         // Streak encouragement
-        if context.streak >= 7 {
+        if context.streak >= 30 {
+            tips.append("\(context.streak)-day streak! That's incredible consistency. You've built a real habit — this is when the transformation happens.")
+        } else if context.streak >= 14 {
+            tips.append("\(context.streak)-day streak. Two weeks of consistent tracking is where most people start seeing real changes. Keep going.")
+        } else if context.streak >= 7 {
             tips.append("You're on a \(context.streak)-day streak. That consistency is what drives real results — keep it going.")
         } else if context.streak > 0 {
             tips.append("\(context.streak)-day streak. Build toward 7 days — that's where the habit starts to stick.")
         }
 
-        // Goal-specific tip
+        // Goal-specific tips (expanded pool)
         if tips.count < 3 {
             switch context.goalType {
             case "lose":
-                tips.append("For fat loss, prioritize protein at every meal, eat plenty of vegetables for volume, and don't skip meals — it leads to overeating later.")
+                let loseTips = [
+                    "For fat loss, prioritize protein at every meal, eat plenty of vegetables for volume, and don't skip meals — it leads to overeating later.",
+                    "Cutting tip: eat your protein and veggies first at each meal. You'll feel fuller and naturally eat fewer carbs and fats.",
+                    "The best fat loss strategy is boring: hit your calorie target, prioritize protein, eat whole foods, and sleep well. No hacks needed.",
+                    "For your cut: high-volume, low-calorie foods like salads, soups, and vegetables are your best friends. They fill you up without the calorie cost.",
+                    "Remember — you don't need to be perfect every day. Hitting your target 5-6 days out of 7 is still excellent for fat loss.",
+                ]
+                tips.append(loseTips.randomElement() ?? "I can help with that. What are you thinking about?")
             case "gain":
-                tips.append("For gaining, eat calorie-dense foods like nuts, avocado, and olive oil. Spread protein across 4+ meals for better absorption.")
+                let gainTips = [
+                    "For gaining, eat calorie-dense foods like nuts, avocado, and olive oil. Spread protein across 4+ meals for better absorption.",
+                    "Bulking tip: if you're struggling to eat enough, drink some calories — smoothies with protein, oats, and peanut butter are easy 500+ cal.",
+                    "For your surplus: don't just eat junk. Prioritize quality calories — the goal is muscle, not just weight. Lean proteins, complex carbs, healthy fats.",
+                    "Gaining requires consistency in surplus. If you're not seeing results, you're probably not eating as much as you think. Track everything.",
+                ]
+                tips.append(gainTips.randomElement() ?? "I can help with that. What are you thinking about?")
             default:
-                tips.append("For maintenance, focus on consistent meal timing and hitting your protein target daily. The rest tends to fall into place.")
+                let maintainTips = [
+                    "For maintenance, focus on consistent meal timing and hitting your protein target daily. The rest tends to fall into place.",
+                    "Maintenance is about consistency. Hit your calories ±100 most days and your weight will stay stable.",
+                    "The key to maintaining: build meals around protein and vegetables, then fill in with carbs and fats. Simple and effective.",
+                    "You're in maintenance mode — the hardest and most underrated phase. Staying consistent here is what separates the successful from the rest.",
+                ]
+                tips.append(maintainTips.randomElement() ?? "I can help with that. What are you thinking about?")
             }
         }
 
@@ -706,7 +1005,9 @@ struct ChatView: View {
     // MARK: - Send Message
 
     private func sendMessage(_ text: String) {
-        guard let profile = appState.userProfile else { return }
+        guard !appState.isSendingMessage else { return }
+        let profile = appState.userProfile
+        let userId = profile?.id ?? UUID()
         guard RateLimiter.canChat(isPremium: subscriptionService.isPremium) else {
             // Restore the message so the user doesn't lose their input
             if messageText.isEmpty { messageText = text }
@@ -720,7 +1021,7 @@ struct ChatView: View {
 
         let userMessage = ChatMessage(
             id: UUID(),
-            userId: profile.id,
+            userId: userId,
             role: .user,
             content: text,
             createdAt: Date()
@@ -732,23 +1033,47 @@ struct ChatView: View {
         sendTask = Task {
             try? await appState.databaseService?.saveChatMessage(userMessage)
 
+            // Gather 7-day history for richer context
+            let weekHistory = profile != nil ? await buildWeekHistory(for: profile!) : []
+            let topFoods = profile != nil ? await buildTopFoods(for: profile!) : []
+            let weightTrend = profile != nil ? await buildWeightTrend(for: profile!) : nil
+
+            // Build meal detail JSON for edit feature
+            let mealsDetail = buildTodayMealsDetail()
+
+            // Yesterday's data for streak recovery
+            let yesterdayDate = Calendar.current.date(byAdding: .day, value: -1, to: Date())?.dateString ?? ""
+            let yesterdayCal = weekHistory.first(where: { $0.date == yesterdayDate })?.calories
+            let yesterdayTgt = appState.calorieTarget
+
             let context = UserContext(
                 targetCalories: appState.calorieTarget,
                 targetProtein: appState.proteinTarget,
+                targetCarbs: appState.carbsTarget,
+                targetFat: appState.fatTarget,
                 todayCalories: appState.caloriesConsumed,
                 todayProtein: appState.proteinConsumed,
                 todayCarbs: appState.carbsConsumed,
                 todayFat: appState.fatConsumed,
-                goalType: profile.goalType?.rawValue ?? "maintain",
+                goalType: profile?.goalType?.rawValue ?? "maintain",
                 recentMeals: appState.todayMeals.map { $0.displayName },
-                streak: appState.currentStreak
+                streak: appState.currentStreak,
+                displayName: profile?.displayName ?? "",
+                dietStyle: profile?.dietStyle?.rawValue,
+                weekHistory: weekHistory,
+                topFoods: topFoods,
+                weightTrend: weightTrend,
+                todayMealsDetail: mealsDetail,
+                yesterdayCalories: yesterdayCal,
+                yesterdayTarget: yesterdayTgt
             )
 
             var responseText: String?
             var responseCards: [ChatCard]?
+            let isPremium = subscriptionService.isPremium
 
-            // Try AI service with timeout
-            if appState.aiService != nil {
+            // Premium users get full AI; free users get local-only (zero API cost)
+            if isPremium, profile != nil, appState.aiService != nil {
                 do {
                     let response = try await withTimeout(seconds: 15) {
                         try await appState.aiService?.sendChatMessage(
@@ -783,17 +1108,15 @@ struct ChatView: View {
 
             let assistantMessage = ChatMessage(
                 id: UUID(),
-                userId: profile.id,
+                userId: userId,
                 role: .assistant,
                 content: finalText,
                 createdAt: Date(),
                 cards: responseCards
             )
 
-            // Only count against rate limit if AI service was actually used
-            if responseText != nil {
-                RateLimiter.recordChat()
-            }
+            // Count against rate limit for all users (free users have daily cap)
+            RateLimiter.recordChat()
 
             await MainActor.run {
                 isTypingResponse = true
@@ -825,6 +1148,395 @@ struct ChatView: View {
             group.cancelAll()
             return result
         }
+    }
+
+    // MARK: - 7-Day History Helpers
+
+    private func buildWeekHistory(for profile: UserProfile) async -> [WeekDaySummary] {
+        guard let summaries = try? await appState.databaseService?.getSummaries(userId: profile.id, days: 7) else { return [] }
+        let target = profile.targetCalories ?? 2000
+        return summaries.map { s in
+            WeekDaySummary(
+                date: s.date,
+                calories: s.totalCalories,
+                protein: s.totalProtein,
+                carbs: s.totalCarbs,
+                fat: s.totalFat,
+                isOnTarget: abs(s.totalCalories - target) <= Int(Double(target) * 0.15)
+            )
+        }
+    }
+
+    private func buildTopFoods(for profile: UserProfile) async -> [String] {
+        guard let summaries = try? await appState.databaseService?.getSummaries(userId: profile.id, days: 7) else { return [] }
+        var foodCounts: [String: Int] = [:]
+        for summary in summaries {
+            for meal in summary.meals {
+                let name = meal.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if !name.isEmpty { foodCounts[name, default: 0] += 1 }
+            }
+        }
+        return foodCounts.sorted { $0.value > $1.value }.prefix(8).map { $0.key }
+    }
+
+    private func buildWeightTrend(for profile: UserProfile) async -> String? {
+        guard let weights = try? await appState.databaseService?.getWeightHistory(userId: profile.id, days: 14) else { return nil }
+        guard weights.count >= 2, let recent = weights.last, let earlier = weights.first else { return nil }
+        let diff = recent.weightKg - earlier.weightKg
+        let isMetric = profile.unitSystem == .metric
+        if isMetric {
+            return String(format: "%+.1f kg over %d days", diff, weights.count)
+        } else {
+            return String(format: "%+.1f lbs over %d days", diff * 2.205, weights.count)
+        }
+    }
+
+    // MARK: - Log From Chat
+
+    func handleFoodLog(query: String) {
+        chatLogQuery = query
+        showingChatLog = true
+    }
+
+    // MARK: - Direct Log (Restaurant Orders)
+
+    func handleDirectLog(name: String, calories: Int, protein: Double, carbs: Double, fat: Double) {
+        guard let profile = appState.userProfile else {
+            handleFoodLog(query: name)
+            return
+        }
+        guard let db = appState.databaseService else {
+            appendErrorMessage("Couldn't log the meal — try again in a moment.", userId: profile.id)
+            return
+        }
+        let userId = profile.id
+        Task {
+            let item = MealItem(
+                id: UUID(),
+                name: name,
+                calories: calories,
+                protein: protein,
+                carbs: carbs,
+                fat: fat,
+                servingSize: nil,
+                quantity: 1,
+                confidence: 0.8
+            )
+            let meal = Meal(
+                id: UUID(),
+                userId: userId,
+                items: [item],
+                totalCalories: calories,
+                totalProtein: protein,
+                totalCarbs: carbs,
+                totalFat: fat,
+                displayName: name,
+                loggedDate: Date().dateString,
+                loggedAt: Date(),
+                createdAt: Date()
+            )
+            do {
+                try await db.logMeal(meal)
+                await appState.refreshTodayData()
+                await appState.recalculateDailySummary(forceFromMeals: true)
+                await MainActor.run {
+                    FuelHaptics.shared.tap()
+                    let confirmMsg = ChatMessage(
+                        id: UUID(),
+                        userId: userId,
+                        role: .assistant,
+                        content: "Logged \(name) — \(calories) cal, \(Int(protein))g protein. Your totals are updated.",
+                        createdAt: Date()
+                    )
+                    withAnimation(FuelAnimation.messagePop) {
+                        appState.chatMessages.append(confirmMsg)
+                    }
+                }
+            } catch {
+                #if DEBUG
+                print("[Chat] Direct log failed: \(error)")
+                #endif
+                await MainActor.run {
+                    appendErrorMessage("Couldn't log \(name) — please try again.", userId: userId)
+                }
+            }
+        }
+    }
+
+    // MARK: - Meal Edit
+
+    func handleMealEdit(editData: MealEditData) {
+        guard let profile = appState.userProfile,
+              let mealId = UUID(uuidString: editData.mealId) else { return }
+
+        // Find the original meal
+        guard let originalMeal = appState.todayMeals.first(where: { $0.id == mealId }) else {
+            #if DEBUG
+            print("[Chat] Meal edit: meal not found \(editData.mealId)")
+            #endif
+            return
+        }
+
+        Task {
+            // Create updated meal with same ID and timestamp
+            let editedItem = MealItem(
+                id: UUID(),
+                name: editData.mealName,
+                calories: editData.newCalories,
+                protein: editData.newProtein,
+                carbs: editData.newCarbs,
+                fat: editData.newFat,
+                quantity: 1,
+                confidence: 0.9
+            )
+            let updatedMeal = Meal(
+                id: mealId,
+                userId: profile.id,
+                items: [editedItem],
+                totalCalories: editData.newCalories,
+                totalProtein: editData.newProtein,
+                totalCarbs: editData.newCarbs,
+                totalFat: editData.newFat,
+                imageUrl: originalMeal.imageUrl,
+                displayName: editData.mealName,
+                loggedDate: originalMeal.loggedDate,
+                loggedAt: originalMeal.loggedAt,
+                createdAt: originalMeal.createdAt
+            )
+
+            guard let db = appState.databaseService else {
+                await MainActor.run {
+                    appendErrorMessage("Couldn't apply the edit — try again in a moment.", userId: profile.id)
+                }
+                return
+            }
+
+            do {
+                // Delete old meal
+                try await db.deleteMeal(id: mealId)
+
+                do {
+                    // Insert updated meal — if this fails, rollback by re-inserting original
+                    try await db.logMeal(updatedMeal)
+                } catch {
+                    // Rollback: re-insert the original meal to prevent data loss
+                    try? await db.logMeal(originalMeal)
+                    await MainActor.run {
+                        appendErrorMessage("Edit failed — your original meal has been restored.", userId: profile.id)
+                    }
+                    return
+                }
+
+                await appState.refreshTodayData()
+                await appState.recalculateDailySummary(forceFromMeals: true)
+
+                let calDiff = editData.newCalories - editData.originalCalories
+                let diffText = calDiff > 0 ? "+\(calDiff)" : "\(calDiff)"
+
+                await MainActor.run {
+                    FuelHaptics.shared.tap()
+                    let confirmMsg = ChatMessage(
+                        id: UUID(),
+                        userId: profile.id,
+                        role: .assistant,
+                        content: "Updated \(editData.mealName) (\(diffText) cal). Your totals are refreshed.",
+                        createdAt: Date()
+                    )
+                    withAnimation(FuelAnimation.messagePop) {
+                        appState.chatMessages.append(confirmMsg)
+                    }
+                }
+            } catch {
+                #if DEBUG
+                print("[Chat] Meal edit failed: \(error)")
+                #endif
+                await MainActor.run {
+                    appendErrorMessage("Couldn't apply the edit — try again in a moment.", userId: profile.id)
+                }
+            }
+        }
+    }
+
+    // MARK: - Log with Analysis (FoodResultsView)
+
+    func handleLogWithAnalysis(_ analysis: FoodAnalysis) {
+        chatLogAnalysis = analysis
+        showingChatLogResults = true
+    }
+
+    private func logMealFromChat(_ analysis: FoodAnalysis) {
+        guard !isLoggingFromChat else { return }
+        let profile: UserProfile
+        if let existing = appState.userProfile {
+            profile = existing
+        } else if let session = Constants.supabase.auth.currentSession {
+            profile = UserProfile(id: session.user.id, isPremium: false, streakCount: 0, longestStreak: 0, unitSystem: .imperial, createdAt: Date(), updatedAt: Date())
+        } else { return }
+
+        guard let db = appState.databaseService else {
+            appendErrorMessage("Couldn't log the meal — try again in a moment.", userId: profile.id)
+            return
+        }
+
+        isLoggingFromChat = true
+        let now = Date()
+        let items = analysis.items.map { item in
+            MealItem(id: item.id, name: item.name, calories: item.calories, protein: item.protein, carbs: item.carbs, fat: item.fat, fiber: item.fiber, sugar: item.sugar, servingSize: item.servingSize, estimatedGrams: item.estimatedGrams, measurementUnit: item.measurementUnit, measurementAmount: item.measurementAmount, quantity: item.quantity, confidence: item.confidence)
+        }
+        let meal = Meal(
+            id: UUID(), userId: profile.id, items: items,
+            totalCalories: analysis.totalCalories, totalProtein: analysis.totalProtein,
+            totalCarbs: analysis.totalCarbs, totalFat: analysis.totalFat,
+            totalFiber: analysis.fiberG ?? 0, totalSugar: analysis.sugarG ?? 0,
+            totalSodium: analysis.sodiumMg ?? 0,
+            displayName: analysis.displayName, loggedDate: now.dateString,
+            loggedAt: now, createdAt: now
+        )
+
+        MealHistoryService.shared.recordMeal(name: meal.displayName, calories: meal.totalCalories)
+
+        Task {
+            do {
+                try await db.logMeal(meal)
+                await appState.refreshTodayData()
+                await appState.recalculateDailySummary(forceFromMeals: true)
+                await MainActor.run {
+                    isLoggingFromChat = false
+                    showingChatLogResults = false
+                    FuelHaptics.shared.tap()
+                    let confirmMsg = ChatMessage(
+                        id: UUID(), userId: profile.id, role: .assistant,
+                        content: "Logged \(analysis.displayName) — \(analysis.totalCalories) cal. Your totals are updated.",
+                        createdAt: Date()
+                    )
+                    withAnimation(FuelAnimation.messagePop) {
+                        appState.chatMessages.append(confirmMsg)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    isLoggingFromChat = false
+                    showingChatLogResults = false
+                    appendErrorMessage("Couldn't save the meal — please try again.", userId: profile.id)
+                }
+                #if DEBUG
+                print("[Chat] Log from analysis failed: \(error)")
+                #endif
+            }
+        }
+    }
+
+    // MARK: - Error Helper
+
+    private func appendErrorMessage(_ text: String, userId: UUID) {
+        let msg = ChatMessage(
+            id: UUID(),
+            userId: userId,
+            role: .assistant,
+            content: text,
+            createdAt: Date()
+        )
+        withAnimation(FuelAnimation.messagePop) {
+            appState.chatMessages.append(msg)
+        }
+    }
+
+    // MARK: - Build Meal Detail for Edge Function
+
+    private func buildTodayMealsDetail() -> String? {
+        let meals = appState.todayMeals
+        guard !meals.isEmpty else { return nil }
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "h:mm a"
+
+        // Use proper JSON encoding to avoid truncation/escape issues
+        let mealDicts: [[String: Any]] = meals.prefix(10).map { meal in
+            let itemDicts: [[String: Any]] = meal.items.prefix(8).map { item in
+                ["name": item.name, "cal": item.calories, "p": Int(item.protein), "c": Int(item.carbs), "f": Int(item.fat)]
+            }
+            return [
+                "id": meal.id.uuidString,
+                "name": meal.displayName,
+                "cal": meal.totalCalories,
+                "p": Int(meal.totalProtein),
+                "c": Int(meal.totalCarbs),
+                "f": Int(meal.totalFat),
+                "time": formatter.string(from: meal.loggedAt),
+                "items": itemDicts
+            ] as [String: Any]
+        }
+
+        guard let data = try? JSONSerialization.data(withJSONObject: mealDicts),
+              let json = String(data: data, encoding: .utf8) else { return nil }
+
+        // Truncate at a safe boundary (complete meal objects)
+        if json.count <= 3000 { return json }
+
+        // Re-encode with fewer meals to stay under limit
+        for limit in stride(from: meals.count - 1, through: 1, by: -1) {
+            let subset = Array(mealDicts.prefix(limit))
+            if let d = try? JSONSerialization.data(withJSONObject: subset),
+               let s = String(data: d, encoding: .utf8),
+               s.count <= 3000 {
+                return s
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Daily Summary
+
+    private func checkDailySummary() async {
+        let hour = Calendar.current.component(.hour, from: Date())
+        let todayStr = Date().dateString
+        let key = "daily_summary_shown_\(todayStr)"
+
+        guard hour >= 20,
+              !UserDefaults.standard.bool(forKey: key),
+              appState.caloriesConsumed > 0,
+              let profile = appState.userProfile else { return }
+
+        UserDefaults.standard.set(true, forKey: key)
+
+        let consumed = appState.caloriesConsumed
+        let target = appState.calorieTarget
+        let remaining = target - consumed
+        let proteinPct = appState.proteinTarget > 0
+            ? Int(appState.proteinConsumed / Double(appState.proteinTarget) * 100) : 0
+
+        var text: String
+        if abs(remaining) <= Int(Double(target) * 0.1) {
+            text = "Solid day — you're right at \(consumed) cal against your \(target) target."
+        } else if consumed > target {
+            text = "You went \(consumed - target) cal over today. One day won't change your trajectory — just get back to it tomorrow."
+        } else {
+            text = "\(remaining) cal still on the table. \(remaining > 400 ? "Make sure you're fueling enough — skipping too much can backfire." : "A small snack would close this out nicely.")"
+        }
+
+        text += " Protein: \(proteinPct)% of target."
+
+        if let best = appState.todayMeals.max(by: { $0.totalProtein < $1.totalProtein }) {
+            text += " \(best.displayName) was your strongest meal today."
+        }
+
+        let cards = [ChatCard(type: .dailySummary)]
+        let message = ChatMessage(
+            id: UUID(),
+            userId: profile.id,
+            role: .assistant,
+            content: text,
+            createdAt: Date(),
+            cards: cards
+        )
+
+        await MainActor.run {
+            isTypingResponse = true
+            withAnimation(FuelAnimation.messagePop) {
+                appState.chatMessages.append(message)
+            }
+        }
+        try? await appState.databaseService?.saveChatMessage(message)
     }
 }
 

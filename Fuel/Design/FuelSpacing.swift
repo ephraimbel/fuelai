@@ -18,3 +18,38 @@ enum FuelRadius {
     static let card: CGFloat = 22
     static let full: CGFloat = 999
 }
+
+// MARK: - 3D Card Modifier
+
+struct FuelCard: ViewModifier {
+    var radius: CGFloat = FuelRadius.card
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                RoundedRectangle(cornerRadius: radius)
+                    .fill(FuelColors.cardBackground)
+                    .shadow(
+                        color: colorScheme == .dark
+                            ? Color.black.opacity(0.3)
+                            : Color(hex: "#1C1917").opacity(0.06),
+                        radius: colorScheme == .dark ? 4 : 8,
+                        y: colorScheme == .dark ? 2 : 3
+                    )
+                    .shadow(
+                        color: colorScheme == .dark
+                            ? Color.clear
+                            : Color(hex: "#1C1917").opacity(0.02),
+                        radius: 1, y: 1
+                    )
+            )
+            .clipShape(RoundedRectangle(cornerRadius: radius))
+    }
+}
+
+extension View {
+    func fuelCard(radius: CGFloat = FuelRadius.card) -> some View {
+        modifier(FuelCard(radius: radius))
+    }
+}

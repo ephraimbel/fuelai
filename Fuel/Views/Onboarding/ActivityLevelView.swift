@@ -6,15 +6,20 @@ struct ActivityLevelView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: FuelSpacing.sm) {
-                Text("How active are you?")
+            VStack(spacing: FuelSpacing.sm) {
+                (Text("How ")
+                    .foregroundColor(FuelColors.ink) +
+                 Text("active ")
+                    .foregroundColor(FuelColors.flame) +
+                 Text("are you?")
+                    .foregroundColor(FuelColors.ink))
                     .font(FuelType.title)
-                    .foregroundStyle(FuelColors.ink)
                 Text("This helps us calculate your daily calories")
                     .font(FuelType.body)
                     .foregroundStyle(FuelColors.stone)
+                    .multilineTextAlignment(.center)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, FuelSpacing.xl)
             .padding(.top, FuelSpacing.lg)
             .padding(.bottom, FuelSpacing.lg)
@@ -29,10 +34,19 @@ struct ActivityLevelView: View {
                         FuelSounds.shared.pop()
                     } label: {
                         HStack(spacing: FuelSpacing.lg) {
-                            Image(systemName: iconName(for: level))
-                                .font(.system(size: 22))
-                                .foregroundStyle(selected == level ? FuelColors.flame : FuelColors.stone)
-                                .frame(width: 44, height: 44)
+                            Group {
+                                if iconName(for: level) == "FlameIcon" {
+                                    Image("FlameIcon")
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: 28, height: 28)
+                                } else {
+                                    Image(systemName: iconName(for: level))
+                                        .font(.system(size: 22))
+                                        .foregroundStyle(selected == level ? FuelColors.flame : FuelColors.stone)
+                                }
+                            }
+                            .frame(width: 44, height: 44)
                                 .background(
                                     Circle()
                                         .fill(selected == level ? FuelColors.flame.opacity(0.12) : FuelColors.cloud)
@@ -82,7 +96,7 @@ struct ActivityLevelView: View {
         case .light: return "figure.walk"
         case .moderate: return "figure.run"
         case .active: return "figure.strengthtraining.traditional"
-        case .veryActive: return "flame.fill"
+        case .veryActive: return "FlameIcon"
         }
     }
 }

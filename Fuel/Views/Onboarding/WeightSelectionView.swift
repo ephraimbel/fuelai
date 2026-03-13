@@ -9,15 +9,19 @@ struct WeightSelectionView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: FuelSpacing.sm) {
-                Text("What's your current weight?")
+            VStack(spacing: FuelSpacing.sm) {
+                (Text("What's your\n")
+                    .foregroundColor(FuelColors.ink) +
+                 Text("current weight?")
+                    .foregroundColor(FuelColors.flame))
                     .font(FuelType.title)
-                    .foregroundStyle(FuelColors.ink)
+                    .multilineTextAlignment(.center)
                 Text("This stays private to you")
                     .font(FuelType.body)
                     .foregroundStyle(FuelColors.stone)
+                    .multilineTextAlignment(.center)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, FuelSpacing.xl)
             .padding(.top, FuelSpacing.lg)
             .staggeredAppear(index: 0)

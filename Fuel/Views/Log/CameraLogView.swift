@@ -4,6 +4,7 @@ import SwiftUI
 
 struct CameraLogView: View {
     let onCapture: (Data, String?) -> Void
+    var onSwitchToBarcode: (() -> Void)? = nil
     @StateObject private var cameraService = CameraService()
     @State private var cameraPermission: AVAuthorizationStatus = .notDetermined
     @State private var selectedPhotoItem: PhotosPickerItem?
@@ -50,7 +51,8 @@ struct CameraLogView: View {
                     .padding(.top, FuelSpacing.xxl)
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .onAppear {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 2_500_000_000)
                             withAnimation { captureError = nil }
                         }
                     }
@@ -61,7 +63,6 @@ struct CameraLogView: View {
             cameraPermission = AVCaptureDevice.authorizationStatus(for: .video)
             if cameraPermission == .authorized && hasCamera {
                 cameraService.configure()
-                cameraService.start()
             } else if cameraPermission == .notDetermined {
                 requestPermission()
             }
@@ -76,7 +77,6 @@ struct CameraLogView: View {
                 cameraPermission = newStatus
                 if newStatus == .authorized && hasCamera {
                     cameraService.configure()
-                    cameraService.start()
                 }
             }
         }
@@ -112,7 +112,7 @@ struct CameraLogView: View {
             let len: CGFloat = 32
             let lw: CGFloat = 3
             let r: CGFloat = 12
-            let color = Color.white.opacity(0.8)
+            let color = FuelColors.flame
 
             ZStack {
                 // Top-left
@@ -192,8 +192,21 @@ struct CameraLogView: View {
             .accessibilityLabel("Take photo")
             .accessibilityHint("Captures a photo of your food for nutrition analysis")
 
-            // Spacer for symmetry
-            Color.clear.frame(width: 44, height: 44)
+            // Barcode scanner toggle
+            Button {
+                FuelHaptics.shared.tap()
+                onSwitchToBarcode?()
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(.ultraThinMaterial)
+                        .frame(width: 44, height: 44)
+                    Image(systemName: "barcode.viewfinder")
+                        .font(FuelType.iconMd)
+                        .foregroundStyle(FuelColors.onDark)
+                }
+            }
+            .opacity(onSwitchToBarcode != nil ? 1 : 0)
         }
         .padding(.bottom, FuelSpacing.xxl + FuelSpacing.lg)
     }
@@ -229,10 +242,10 @@ struct CameraLogView: View {
             PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
                 Text("Choose Photo")
                     .font(FuelType.cardTitle)
-                    .foregroundStyle(FuelColors.onDark)
+                    .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, FuelSpacing.lg)
-                    .background(FuelColors.ink)
+                    .background(FuelColors.buttonFill)
                     .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
             }
             .padding(.horizontal, FuelSpacing.xl)
@@ -280,10 +293,10 @@ struct CameraLogView: View {
                 } label: {
                     Text("Open Settings")
                         .font(FuelType.cardTitle)
-                        .foregroundStyle(FuelColors.onDark)
+                        .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, FuelSpacing.lg)
-                        .background(FuelColors.ink)
+                        .background(FuelColors.buttonFill)
                         .clipShape(RoundedRectangle(cornerRadius: FuelRadius.md))
                 }
 
@@ -313,7 +326,6 @@ struct CameraLogView: View {
                 cameraPermission = granted ? .authorized : .denied
                 if granted && hasCamera {
                     cameraService.configure()
-                    cameraService.start()
                 }
             }
         }
